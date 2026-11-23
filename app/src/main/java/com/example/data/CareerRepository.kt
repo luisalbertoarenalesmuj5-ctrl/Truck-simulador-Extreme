@@ -5,6 +5,7 @@ import com.example.R
 import com.example.model.CameraMode
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
+import com.example.model.LiveryStyle
 import com.example.model.RouteSpec
 import com.example.model.SteeringMode
 import com.example.model.TruckSpec
@@ -119,9 +120,16 @@ class CareerRepository(
                     "xp" to 0L,
                     "selectedTruckId" to "nordic_fh540",
                     "unlockedTruckIds" to listOf("nordic_fh540"),
+                    "paintColorHex" to "#1E5BB8",
+                    "liveryStyle" to LiveryStyle.CLASSIC.name,
+                    "bullbarInstalled" to false,
+                    "roofLightbarInstalled" to false,
+                    "aeroSpoilerInstalled" to false,
+                    "chromeExhaustInstalled" to false,
+                    "truckDamagePercent" to 0L,
                     "steeringMode" to SteeringMode.WHEEL.name,
                     "steeringSensitivity" to 1.0,
-                    "cameraMode" to CameraMode.SIDE_2D.name,
+                    "cameraMode" to CameraMode.EXTERIOR_2D.name,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -189,7 +197,7 @@ class CareerRepository(
                     "Créditos insuficientes para adquirir ${truck.name}"
                 }
                 val newCredits = (currentProfile.credits - truck.priceCredits).coerceAtLeast(0L)
-                val updatedList = (currentProfile.unlockedTruckIds + truck.id).distinct().take(10)
+                val updatedList = (currentProfile.unlockedTruckIds + truck.id).distinct().take(12)
                 docRef.update(
                     mapOf(
                         "credits" to newCredits,
@@ -199,6 +207,75 @@ class CareerRepository(
                     )
                 ).await()
             }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveWorkshopCustomization(
+        currentProfile: DriverProfile,
+        paintColorHex: String,
+        liveryStyle: LiveryStyle,
+        bullbarInstalled: Boolean,
+        roofLightbarInstalled: Boolean,
+        aeroSpoilerInstalled: Boolean,
+        chromeExhaustInstalled: Boolean,
+        totalCostCredits: Long
+    ): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val uid = requireUserId()
+            val docRef = db.collection("users").document(uid)
+            path = docRef.path
+            val safeCost = totalCostCredits.coerceAtLeast(0L)
+            require(currentProfile.credits >= safeCost) {
+                "Créditos insuficientes para esta mejora del taller"
+            }
+            val newCredits = (currentProfile.credits - safeCost).coerceAtLeast(0L)
+            docRef.update(
+                mapOf(
+                    "credits" to newCredits,
+                    "paintColorHex" to paintColorHex,
+                    "liveryStyle" to liveryStyle.name,
+                    "bullbarInstalled" to bullbarInstalled,
+                    "roofLightbarInstalled" to roofLightbarInstalled,
+                    "aeroSpoilerInstalled" to aeroSpoilerInstalled,
+                    "chromeExhaustInstalled" to chromeExhaustInstalled,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun repairTruckOrAdjustCredits(
+        currentProfile: DriverProfile,
+        creditsDelta: Long,
+        newDamagePercent: Long
+    ): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val uid = requireUserId()
+            val docRef = db.collection("users").document(uid)
+            path = docRef.path
+            val newCredits = (currentProfile.credits + creditsDelta).coerceIn(0L, 100_000_000L)
+            val safeDamage = newDamagePercent.coerceIn(0L, 100L)
+            docRef.update(
+                mapOf(
+                    "credits" to newCredits,
+                    "truckDamagePercent" to safeDamage,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -253,6 +330,7 @@ class CareerRepository(
                     "totalDistanceKm" to (currentProfile.totalDistanceKm + route.displayDistanceKm).coerceAtMost(10_000_000.0),
                     "deliveriesCompleted" to (currentProfile.deliveriesCompleted + 1L),
                     "xp" to (currentProfile.xp + earnedXp).coerceAtMost(100_000_000L),
+                    "truckDamagePercent" to safeDamage.toLong(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )

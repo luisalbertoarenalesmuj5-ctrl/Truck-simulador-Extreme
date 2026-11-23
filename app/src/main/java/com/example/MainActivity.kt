@@ -16,16 +16,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.data.CareerRepository
+import com.example.data.ConvoyRepository
 import com.example.data.authStateFlow
 import com.example.model.CameraMode
 import com.example.model.RouteSpec
 import com.example.model.SteeringMode
 import com.example.model.TruckSpec
+import com.example.model.TruckVisualConfig
 import com.example.ui.AuthScreen
 import com.example.ui.DriveScreen
 import com.example.ui.HubScreen
 import com.example.ui.theme.TruckSimTheme
 import com.example.viewmodel.CareerViewModel
+import com.example.viewmodel.ConvoyViewModel
+import com.example.viewmodel.UiState
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -36,7 +40,10 @@ private data class ActiveDriveSession(
     val route: RouteSpec,
     val steeringMode: SteeringMode,
     val sensitivity: Float,
-    val cameraMode: CameraMode
+    val cameraMode: CameraMode,
+    val visualConfig: TruckVisualConfig,
+    val initialDamagePercent: Int,
+    val activeConvoyRoomId: String?
 )
 
 class MainActivity : ComponentActivity() {
@@ -62,7 +69,7 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
         val uid = user.uid
         key(uid) {
             val viewModel: CareerViewModel = viewModel(
-                key = uid,
+                key = "career_$uid",
                 factory = viewModelFactory {
                     initializer {
                         val app = checkNotNull(this[APPLICATION_KEY]) {
@@ -79,19 +86,42 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
                 }
             )
 
+            val convoyViewModel: ConvoyViewModel = viewModel(
+                key = "convoy_$uid",
+                factory = viewModelFactory {
+                    initializer {
+                        val app = checkNotNull(this[APPLICATION_KEY]) {
+                            "APPLICATION_KEY missing from CreationExtras"
+                        }
+                        val databaseId = app.getString(R.string.firestore_database_id)
+                        val db = FirebaseFirestore.getInstance(databaseId)
+                        ConvoyViewModel(
+                            repository = ConvoyRepository(db),
+                            currentUserId = uid
+                        )
+                    }
+                }
+            )
+
+            val profileState by viewModel.profileState.collectAsStateWithLifecycle()
+            val activeProfile = (profileState as? UiState.Success)?.data
             var activeSession by remember { mutableStateOf<ActiveDriveSession?>(null) }
 
             val session = activeSession
             if (session == null) {
                 HubScreen(
                     viewModel = viewModel,
-                    onStartDrive = { truck, route, steerMode, sens, camMode ->
+                    convoyViewModel = convoyViewModel,
+                    onStartDrive = { truck, route, steerMode, sens, camMode, visualConfig, dmg, convoyRoomId ->
                         activeSession = ActiveDriveSession(
                             truck = truck,
                             route = route,
                             steeringMode = steerMode,
                             sensitivity = sens,
-                            cameraMode = camMode
+                            cameraMode = camMode,
+                            visualConfig = visualConfig,
+                            initialDamagePercent = dmg,
+                            activeConvoyRoomId = convoyRoomId
                         )
                     }
                 )
@@ -99,9 +129,17 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
                 DriveScreen(
                     truck = session.truck,
                     route = session.route,
+                    visualConfig = session.visualConfig,
+                    initialDamagePercent = session.initialDamagePercent,
                     initialSteeringMode = session.steeringMode,
                     initialSensitivity = session.sensitivity,
                     initialCameraMode = session.cameraMode,
+                    profile = activeProfile,
+                    convoyViewModel = convoyViewModel,
+                    activeConvoyRoomId = session.activeConvoyRoomId,
+                    onRoadCreditAdjustment = { deltaCredits, dmg ->
+                        viewModel.adjustCreditsForRoadEvent(deltaCredits, dmg)
+                    },
                     onSaveDelivery = { damage, duration ->
                         viewModel.completeDelivery(
                             route = session.route,

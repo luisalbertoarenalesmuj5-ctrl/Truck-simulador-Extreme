@@ -27,7 +27,16 @@ service cloud.firestore {
     }
 
     function isValidTruckId(truckId) {
-      return truckId in ['nordic_fh540', 'valkyrie_s730', 'titan_579', 'colossus_w900'];
+      return truckId in [
+        'nordic_fh540',
+        'valkyrie_s730',
+        'titan_579',
+        'colossus_w900',
+        'bison_timber',
+        'atlas_tanker',
+        'kodiak_flatbed',
+        'carrier_trans9'
+      ];
     }
 
     function isValidSteeringMode(mode) {
@@ -35,7 +44,14 @@ service cloud.firestore {
     }
 
     function isValidCameraMode(mode) {
-      return mode in ['CHASE', 'CAB', 'HOOD'];
+      return mode in [
+        'EXTERIOR_2D', 'CAB_2D', 'SIDE_2D', 'FRONT_2D',
+        'TOPDOWN_2D', 'CHASE', 'CAB', 'HOOD'
+      ];
+    }
+
+    function isValidLiveryStyle(style) {
+      return style in ['CLASSIC', 'RACING', 'BOLT', 'EXECUTIVE'];
     }
 
     function isValidDriverProfile(data, userId) {
@@ -46,8 +62,15 @@ service cloud.firestore {
              data.deliveriesCompleted is int && data.deliveriesCompleted >= 0 && data.deliveriesCompleted <= 1000000 &&
              data.xp is int && data.xp >= 0 && data.xp <= 100000000 &&
              isValidTruckId(data.selectedTruckId) &&
-             data.unlockedTruckIds is list && data.unlockedTruckIds.size() >= 1 && data.unlockedTruckIds.size() <= 10 &&
+             data.unlockedTruckIds is list && data.unlockedTruckIds.size() >= 1 && data.unlockedTruckIds.size() <= 12 &&
              data.unlockedTruckIds[0] is string &&
+             (!('paintColorHex' in data) || (data.paintColorHex is string && data.paintColorHex.size() >= 4 && data.paintColorHex.size() <= 9)) &&
+             (!('liveryStyle' in data) || isValidLiveryStyle(data.liveryStyle)) &&
+             (!('bullbarInstalled' in data) || data.bullbarInstalled is bool) &&
+             (!('roofLightbarInstalled' in data) || data.roofLightbarInstalled is bool) &&
+             (!('aeroSpoilerInstalled' in data) || data.aeroSpoilerInstalled is bool) &&
+             (!('chromeExhaustInstalled' in data) || data.chromeExhaustInstalled is bool) &&
+             (!('truckDamagePercent' in data) || (data.truckDamagePercent is int && data.truckDamagePercent >= 0 && data.truckDamagePercent <= 100)) &&
              isValidSteeringMode(data.steeringMode) &&
              data.steeringSensitivity is number && data.steeringSensitivity >= 0.4 && data.steeringSensitivity <= 2.0 &&
              isValidCameraMode(data.cameraMode) &&
@@ -69,6 +92,46 @@ service cloud.firestore {
              data.createdAt is timestamp && data.createdAt <= request.time;
     }
 
+    function isValidConvoyRoom(data) {
+      return data.roomCode is string && data.roomCode.size() >= 4 && data.roomCode.size() <= 10 &&
+             data.roomName is string && data.roomName.size() >= 2 && data.roomName.size() <= 50 &&
+             data.hostId is string && isValidId(data.hostId) &&
+             data.hostName is string && data.hostName.size() >= 2 && data.hostName.size() <= 40 &&
+             data.routeId is string && data.routeId.size() >= 1 && data.routeId.size() <= 64 &&
+             data.privateRoom is bool &&
+             data.status in ['OPEN', 'DRIVING'] &&
+             data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 8 &&
+             data.memberUids[0] is string &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidConvoyPlayer(data, playerId) {
+      return data.userId is string && data.userId == playerId &&
+             data.driverName is string && data.driverName.size() >= 2 && data.driverName.size() <= 40 &&
+             isValidTruckId(data.truckId) &&
+             data.paintColorHex is string && data.paintColorHex.size() >= 4 && data.paintColorHex.size() <= 9 &&
+             data.roadS is number && data.roadS >= 0 && data.roadS <= 20000 &&
+             data.laneOffset is number && data.laneOffset >= -12.0 && data.laneOffset <= 12.0 &&
+             data.speedKmh is int && data.speedKmh >= 0 && data.speedKmh <= 220 &&
+             data.headlightsOn is bool &&
+             data.hornActive is bool &&
+             data.online is bool &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidConvoyMessage(data, senderUid) {
+      return data.userId is string && data.userId == senderUid &&
+             data.senderName is string && data.senderName.size() >= 2 && data.senderName.size() <= 40 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 200 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isConvoyMember(roomId) {
+      return isSignedIn() &&
+             request.auth.uid in get(/databases/$(database)/documents/convoyRooms/$(roomId)).data.memberUids;
+    }
+
     match /users/{userId} {
       allow get: if isOwner(userId) && isValidId(userId);
       allow list: if false;
@@ -83,6 +146,9 @@ service cloud.firestore {
                        incoming().keys().hasOnly([
                          'userId', 'driverName', 'credits', 'totalDistanceKm',
                          'deliveriesCompleted', 'xp', 'selectedTruckId', 'unlockedTruckIds',
+                         'paintColorHex', 'liveryStyle', 'bullbarInstalled',
+                         'roofLightbarInstalled', 'aeroSpoilerInstalled', 'chromeExhaustInstalled',
+                         'truckDamagePercent',
                          'steeringMode', 'steeringSensitivity', 'cameraMode', 'createdAt', 'updatedAt'
                        ]) &&
                        isValidDriverProfile(incoming(), userId);
@@ -103,7 +169,16 @@ service cloud.firestore {
                          ]) ||
                          // Action 3: Complete a freight delivery
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'credits', 'totalDistanceKm', 'deliveriesCompleted', 'xp', 'updatedAt'
+                           'credits', 'totalDistanceKm', 'deliveriesCompleted', 'xp', 'truckDamagePercent', 'updatedAt'
+                         ]) ||
+                         // Action 4: Customize paint & accessories in Workshop
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'credits', 'paintColorHex', 'liveryStyle', 'bullbarInstalled',
+                           'roofLightbarInstalled', 'aeroSpoilerInstalled', 'chromeExhaustInstalled', 'updatedAt'
+                         ]) ||
+                         // Action 5: Repair truck or adjust workshop credits/damage
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'credits', 'truckDamagePercent', 'updatedAt'
                          ])
                        );
 
@@ -131,6 +206,89 @@ service cloud.firestore {
         // Delivery history entries are immutable audit logs
         allow update: if false;
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(deliveryId);
+      }
+    }
+
+    match /convoyRooms/{roomId} {
+      // Public rooms and rooms where user is a member are discoverable; private rooms can be fetched directly by invite ID
+      allow get: if isSignedIn() && isValidId(roomId);
+      allow list: if isSignedIn() && (resource.data.privateRoom == false || request.auth.uid in resource.data.memberUids);
+
+      allow create: if isSignedIn() &&
+                       isValidId(roomId) &&
+                       incoming().hostId == request.auth.uid &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().keys().hasAll([
+                         'roomCode', 'roomName', 'hostId', 'hostName', 'routeId',
+                         'privateRoom', 'status', 'memberUids', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'roomCode', 'roomName', 'hostId', 'hostName', 'routeId',
+                         'privateRoom', 'status', 'memberUids', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidConvoyRoom(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(roomId) &&
+                       isValidConvoyRoom(incoming()) &&
+                       incoming().hostId == existing().hostId &&
+                       incoming().roomCode == existing().roomCode &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action 1: Join or leave memberUids
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']) ||
+                         // Action 2: Host updates route or convoy status
+                         (existing().hostId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'routeId', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(roomId) && existing().hostId == request.auth.uid;
+
+      match /players/{playerId} {
+        allow get: if isValidId(roomId) && isValidId(playerId) && isConvoyMember(roomId);
+        allow list: if isValidId(roomId) && isConvoyMember(roomId);
+
+        allow create: if isOwner(playerId) &&
+                         isValidId(roomId) &&
+                         isValidId(playerId) &&
+                         isConvoyMember(roomId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'driverName', 'truckId', 'paintColorHex',
+                           'roadS', 'laneOffset', 'speedKmh', 'headlightsOn', 'hornActive', 'online', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'driverName', 'truckId', 'paintColorHex',
+                           'roadS', 'laneOffset', 'speedKmh', 'headlightsOn', 'hornActive', 'online', 'updatedAt'
+                         ]) &&
+                         isValidConvoyPlayer(incoming(), playerId);
+
+        allow update: if isOwner(playerId) &&
+                         isValidId(roomId) &&
+                         isValidId(playerId) &&
+                         isConvoyMember(roomId) &&
+                         incoming().userId == existing().userId &&
+                         isValidConvoyPlayer(incoming(), playerId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'driverName', 'truckId', 'paintColorHex',
+                           'roadS', 'laneOffset', 'speedKmh', 'headlightsOn', 'hornActive', 'online', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(playerId) && isValidId(roomId) && isValidId(playerId);
+      }
+
+      match /messages/{messageId} {
+        allow get: if isValidId(roomId) && isValidId(messageId) && isConvoyMember(roomId);
+        allow list: if isValidId(roomId) && isConvoyMember(roomId);
+
+        allow create: if isSignedIn() &&
+                         isValidId(roomId) &&
+                         isValidId(messageId) &&
+                         isConvoyMember(roomId) &&
+                         incoming().keys().hasAll(['userId', 'senderName', 'text', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'senderName', 'text', 'createdAt']) &&
+                         isValidConvoyMessage(incoming(), request.auth.uid);
+
+        allow update, delete: if false;
       }
     }
   }

@@ -1,5 +1,7 @@
 package com.example.sim
 
+import com.example.model.ConvoyPlayer
+import com.example.model.EnvironmentTheme
 import com.example.model.RouteSpec
 import com.example.model.TruckSpec
 import com.example.model.WeatherCondition
@@ -36,13 +38,37 @@ data class ControlInputs(
     val sprint: Boolean = false
 )
 
+enum class TrafficVehicleType {
+    SEDAN,
+    BUS,
+    MOTORCYCLE,
+    TRUCK
+}
+
 data class TrafficVehicle(
     var s: Float,
     var laneOffset: Float,
     var speedMs: Float,
-    val isTruck: Boolean,
+    val baseSpeedMs: Float,
+    val type: TrafficVehicleType,
     val isOncoming: Boolean,
-    val colorRgb: FloatArray
+    val colorRgb: FloatArray,
+    var braking: Boolean = false
+) {
+    val isTruck: Boolean get() = type == TrafficVehicleType.TRUCK || type == TrafficVehicleType.BUS
+}
+
+enum class TrafficLightState {
+    GREEN,
+    AMBER,
+    RED
+}
+
+data class TrafficLightNode(
+    val s: Float,
+    val phaseOffsetSec: Float,
+    val label: String,
+    var state: TrafficLightState = TrafficLightState.GREEN
 )
 
 enum class LandmarkKind {
@@ -50,6 +76,18 @@ enum class LandmarkKind {
     CITY_MIDTOWN,
     CITY_DESTINATION,
     FUEL_STATION,
+    WORKSHOP,
+    TOLL_BOOTH,
+    PARKING_REST,
+    BRIDGE,
+    TUNNEL,
+    VOLCANO,
+    FOREST,
+    FARM_ZONE,
+    INDUSTRIAL_ZONE,
+    INTERSECTION,
+    ROUNDABOUT,
+    SECONDARY_ROAD_ZONE,
     VILLAGE_HOUSES,
     WIND_FARM,
     HIGHWAY_GANTRY
@@ -58,7 +96,8 @@ enum class LandmarkKind {
 data class WorldLandmark(
     val s: Float,
     val kind: LandmarkKind,
-    val label: String
+    val label: String,
+    val spanMeters: Float = 40f
 )
 
 data class TelemetrySnapshot(
@@ -70,9 +109,16 @@ data class TelemetrySnapshot(
     val fuelPercent: Int = 100,
     val lowFuelWarning: Boolean = false,
     val nearFuelStation: Boolean = false,
+    val nearWorkshop: Boolean = false,
+    val nearParkingBay: Boolean = false,
+    val activeZoneLabel: String = "Autopista Principal",
+    val isSecondaryRoad: Boolean = false,
+    val inTunnel: Boolean = false,
+    val onBridge: Boolean = false,
     val damagePercent: Int = 0,
     val progressFraction: Float = 0f,
     val roadProgressMeters: Float = 0f,
+    val totalDrivenKm: Double = 0.0,
     val remainingDisplayKm: Double = 0.0,
     val elapsedSeconds: Long = 0L,
     val upcomingCurvature: Float = 0f,
@@ -87,12 +133,20 @@ data class TelemetrySnapshot(
     val headlightsOn: Boolean = true,
     val leftBlinker: Boolean = false,
     val rightBlinker: Boolean = false,
+    val wiperMode: Int = 0, // 0 = OFF, 1 = INT, 2 = FAST
+    val wiperSweepNorm: Float = 0f,
     val driverOnFoot: Boolean = false,
     val nearCabDoor: Boolean = true,
     val canExitTruck: Boolean = true,
     val timeOfDay: Float = 0.36f,
     val dayPhaseLabel: String = "Día",
-    val weatherCondition: WeatherCondition = WeatherCondition.CLEAR
+    val weatherCondition: WeatherCondition = WeatherCondition.CLEAR,
+    val upcomingTrafficLight: TrafficLightState? = null,
+    val upcomingTrafficLightDistMeters: Int = 0,
+    val redLightFineCount: Int = 0,
+    val tollPaidCount: Int = 0,
+    val lastRoadAlert: String? = null,
+    val lastRoadAlertSeq: Int = 0
 )
 
 class RoadSpline(route: RouteSpec) {
@@ -113,7 +167,6 @@ class RoadSpline(route: RouteSpec) {
 
         for (i in 0 until count) {
             val s = i * stepMeters
-            // Smooth start straight for 80m, then sweeping highway curves and elevation changes
             val ramp = ((s - 40f) / 120f).coerceIn(0f, 1f)
             val endRamp = ((totalSimLength - s) / 100f).coerceIn(0f, 1f)
             val envelope = ramp * (0.35f + 0.65f * endRamp)
@@ -186,7 +239,6 @@ class RoadSpline(route: RouteSpec) {
         val projX = p0.x + segX * t
         val projZ = p0.z + segZ * t
         val yaw = p0.yaw + (p1.yaw - p0.yaw) * t
-        // Right normal of forward (sin(yaw), -cos(yaw)) is (cos(yaw), sin(yaw))
         val rightX = cos(yaw)
         val rightZ = sin(yaw)
         val laneOffset = (wx - projX) * rightX + (wz - projZ) * rightZ
@@ -205,15 +257,15 @@ class RoadSpline(route: RouteSpec) {
 
 class TruckPhysicsEngine(
     val truck: TruckSpec,
-    val route: RouteSpec
+    val route: RouteSpec,
+    initialDamagePercent: Int = 0
 ) {
     val road = RoadSpline(route)
-    val roadHalfWidth = 5.5f
+    val roadHalfWidth = 5.6f
 
     @Volatile
     var inputs = ControlInputs()
 
-    // Tractor & trailer state (accessed by GL thread under lock)
     private val stateLock = Any()
 
     var tractorX = 0f
@@ -246,7 +298,7 @@ class TruckPhysicsEngine(
         private set
     var rpm = 680f
         private set
-    var currentGear = 0 // -1 = R, 0 = N, 1..12 = Forward
+    var currentGear = 0
         private set
     var manualTransmission = false
         private set
@@ -255,13 +307,19 @@ class TruckPhysicsEngine(
         private set
     var nearFuelStation = false
         private set
-    var damageAccum = 0f
+    var nearWorkshop = false
+        private set
+    var nearParkingBay = false
+        private set
+    var damageAccum = initialDamagePercent.toFloat().coerceIn(0f, 100f)
         private set
     var collisionFlash = 0f
         private set
     var roadIndexHint = 3
         private set
     var roadProgressMeters = 12f
+        private set
+    var totalDrivenMeters = 0f
         private set
     var laneOffset = 2.15f
         private set
@@ -272,7 +330,6 @@ class TruckPhysicsEngine(
     var finished = false
         private set
 
-    // Dynamic 2D Day/Night & Weather state
     var timeOfDay = route.environment.initialTimeOfDay
         private set
     var weatherCondition = route.environment.defaultWeather
@@ -282,7 +339,14 @@ class TruckPhysicsEngine(
     var fogDensity = 0f
         private set
 
-    // Articulated 2D driver ("Hombre") state when walking outside the cab
+    var wiperMode = if (route.environment.defaultWeather == WeatherCondition.RAIN ||
+        route.environment.defaultWeather == WeatherCondition.STORM
+    ) 1 else 0
+        private set
+    var wiperSweepNorm = 0f
+        private set
+    private var wiperTimer = 0f
+
     var driverOnFoot = false
         private set
     var driverX = 0f
@@ -302,24 +366,66 @@ class TruckPhysicsEngine(
     private var simClock = 0f
     private var smoothThrottle = 0f
 
+    var redLightFineCount = 0
+        private set
+    var tollPaidCount = 0
+        private set
+    private var lastRoadAlert: String? = null
+    private var lastRoadAlertSeq = 0
+
+    private val triggeredTolls = HashSet<Int>()
+    private val triggeredRedLights = HashSet<Int>()
+
     val traffic: MutableList<TrafficVehicle> = mutableListOf()
+    private val remoteConvoyList: MutableList<ConvoyPlayer> = mutableListOf()
 
     val fuelStationPositions: List<Float> = listOf(
-        route.simLengthMeters * 0.34f,
-        route.simLengthMeters * 0.70f
+        route.simLengthMeters * 0.28f,
+        route.simLengthMeters * 0.68f
+    )
+    val workshopPositions: List<Float> = listOf(
+        route.simLengthMeters * 0.44f,
+        route.simLengthMeters * 0.80f
+    )
+    val parkingBayPositions: List<Float> = listOf(
+        route.simLengthMeters * 0.19f,
+        route.simLengthMeters * 0.59f
+    )
+    val tollPositions: List<Float> = listOf(
+        route.simLengthMeters * 0.38f,
+        route.simLengthMeters * 0.85f
+    )
+    val trafficLights: List<TrafficLightNode> = listOf(
+        TrafficLightNode(route.simLengthMeters * 0.24f, phaseOffsetSec = 0f, label = "Cruce Valle Norte"),
+        TrafficLightNode(route.simLengthMeters * 0.54f, phaseOffsetSec = 5.5f, label = "Rotonda Central"),
+        TrafficLightNode(route.simLengthMeters * 0.75f, phaseOffsetSec = 10.2f, label = "Avenida Puerto")
     )
 
     val landmarks: List<WorldLandmark> = buildList {
-        add(WorldLandmark(15f, LandmarkKind.CITY_ORIGIN, route.originCity))
-        add(WorldLandmark(route.simLengthMeters * 0.16f, LandmarkKind.VILLAGE_HOUSES, "Valle"))
-        add(WorldLandmark(route.simLengthMeters * 0.25f, LandmarkKind.WIND_FARM, "Parque Eólico"))
-        add(WorldLandmark(fuelStationPositions[0], LandmarkKind.FUEL_STATION, "Diésel Express"))
-        add(WorldLandmark(route.simLengthMeters * 0.49f, LandmarkKind.CITY_MIDTOWN, "Área Industrial"))
-        add(WorldLandmark(route.simLengthMeters * 0.60f, LandmarkKind.VILLAGE_HOUSES, "Mirador"))
-        add(WorldLandmark(fuelStationPositions[1], LandmarkKind.FUEL_STATION, "Ruta Diésel 24h"))
-        add(WorldLandmark(route.simLengthMeters * 0.83f, LandmarkKind.HIGHWAY_GANTRY, "Peaje"))
-        add(WorldLandmark(route.simLengthMeters - 18f, LandmarkKind.CITY_DESTINATION, route.destinationCity))
-    }
+        val len = route.simLengthMeters
+        add(WorldLandmark(15f, LandmarkKind.CITY_ORIGIN, route.originCity, 50f))
+        add(WorldLandmark(len * 0.09f, LandmarkKind.FARM_ZONE, "Zona Agrícola", 75f))
+        add(WorldLandmark(len * 0.14f, LandmarkKind.FOREST, "Bosque Pinos", 80f))
+        add(WorldLandmark(parkingBayPositions[0], LandmarkKind.PARKING_REST, "Área de Descanso", 36f))
+        add(WorldLandmark(len * 0.22f, LandmarkKind.BRIDGE, "Puente del Río", 68f))
+        add(WorldLandmark(len * 0.24f, LandmarkKind.INTERSECTION, "Cruce Norte", 28f))
+        add(WorldLandmark(fuelStationPositions[0], LandmarkKind.FUEL_STATION, "Diésel Express", 38f))
+        add(WorldLandmark(len * 0.33f, LandmarkKind.VOLCANO, "Volcán Nevado", 110f))
+        add(WorldLandmark(tollPositions[0], LandmarkKind.TOLL_BOOTH, "Peaje Sur", 32f))
+        add(WorldLandmark(workshopPositions[0], LandmarkKind.WORKSHOP, "Taller Mecánico 24H", 38f))
+        add(WorldLandmark(len * 0.48f, LandmarkKind.INDUSTRIAL_ZONE, "Parque Industrial", 85f))
+        add(WorldLandmark(len * 0.54f, LandmarkKind.ROUNDABOUT, "Rotonda Central", 42f))
+        add(WorldLandmark(parkingBayPositions[1], LandmarkKind.PARKING_REST, "Estacionamiento", 36f))
+        add(WorldLandmark(len * 0.62f, LandmarkKind.SECONDARY_ROAD_ZONE, "Camino Rural", 95f))
+        add(WorldLandmark(len * 0.64f, LandmarkKind.TUNNEL, "Túnel Sierra", 74f))
+        add(WorldLandmark(fuelStationPositions[1], LandmarkKind.FUEL_STATION, "Ruta Diésel 24H", 38f))
+        add(WorldLandmark(len * 0.72f, LandmarkKind.WIND_FARM, "Parque Eólico", 60f))
+        add(WorldLandmark(len * 0.75f, LandmarkKind.INTERSECTION, "Cruce Puerto", 28f))
+        add(WorldLandmark(workshopPositions[1], LandmarkKind.WORKSHOP, "Servicio Pesado", 38f))
+        add(WorldLandmark(tollPositions[1], LandmarkKind.TOLL_BOOTH, "Peaje Metrópoli", 32f))
+        add(WorldLandmark(len * 0.90f, LandmarkKind.HIGHWAY_GANTRY, "Pórtico", 24f))
+        add(WorldLandmark(len - 18f, LandmarkKind.CITY_DESTINATION, route.destinationCity, 50f))
+    }.sortedBy { it.s }
 
     private val gearRatios = floatArrayOf(
         0f, 14.5f, 11.2f, 8.8f, 6.9f, 5.4f, 4.2f, 3.3f, 2.6f, 2.05f, 1.60f, 1.28f, 1.02f
@@ -328,10 +434,10 @@ class TruckPhysicsEngine(
     private val maxSpeedMs = truck.maxSpeedKmh / 3.6f
 
     init {
-        reset()
+        reset(preserveDamage = true)
     }
 
-    fun reset() {
+    fun reset(preserveDamage: Boolean = false) {
         synchronized(stateLock) {
             val startPt = road.sampleAtDistance(18f)
             val rightX = cos(startPt.yaw)
@@ -351,10 +457,13 @@ class TruckPhysicsEngine(
             currentGear = 0
             fuelLiters = truck.fuelCapacityLiters
             nearFuelStation = false
-            damageAccum = 0f
+            nearWorkshop = false
+            nearParkingBay = false
+            if (!preserveDamage) damageAccum = 0f
             collisionFlash = 0f
             roadIndexHint = 4
             roadProgressMeters = 18f
+            totalDrivenMeters = 0f
             elapsedSimTime = 0f
             finished = false
             timeOfDay = route.environment.initialTimeOfDay
@@ -373,7 +482,21 @@ class TruckPhysicsEngine(
             nearCabDoor = true
             simClock = 0f
             smoothThrottle = 0f
+            wiperTimer = 0f
+            wiperSweepNorm = 0f
+            redLightFineCount = 0
+            tollPaidCount = 0
+            lastRoadAlert = null
+            triggeredTolls.clear()
+            triggeredRedLights.clear()
             spawnTraffic()
+        }
+    }
+
+    fun setRemoteConvoyPlayers(players: List<ConvoyPlayer>) {
+        synchronized(stateLock) {
+            remoteConvoyList.clear()
+            remoteConvoyList.addAll(players)
         }
     }
 
@@ -407,12 +530,19 @@ class TruckPhysicsEngine(
         }
     }
 
+    fun cycleWiperMode(): Int {
+        synchronized(stateLock) {
+            wiperMode = (wiperMode + 1) % 3
+            return wiperMode
+        }
+    }
+
     fun cycleTimeOfDayPreset() {
         synchronized(stateLock) {
             timeOfDay = when {
-                timeOfDay < 0.55f -> 0.72f // Day -> Sunset
-                timeOfDay < 0.82f -> 0.94f // Sunset -> Night
-                else -> 0.36f              // Night -> Day
+                timeOfDay < 0.55f -> 0.72f
+                timeOfDay < 0.82f -> 0.94f
+                else -> 0.36f
             }
         }
     }
@@ -421,6 +551,9 @@ class TruckPhysicsEngine(
         synchronized(stateLock) {
             val all = WeatherCondition.entries
             weatherCondition = all[(all.indexOf(weatherCondition) + 1) % all.size]
+            if ((weatherCondition == WeatherCondition.RAIN || weatherCondition == WeatherCondition.STORM) && wiperMode == 0) {
+                wiperMode = 1
+            }
         }
     }
 
@@ -428,13 +561,57 @@ class TruckPhysicsEngine(
         synchronized(stateLock) {
             if (!isAtFuelStation()) return false
             fuelLiters = truck.fuelCapacityLiters
+            pushAlert("Tanque Diésel Lleno al 100%")
             return true
         }
     }
 
+    fun repairVehicleAtWorkshop(): Int {
+        synchronized(stateLock) {
+            if (!isAtWorkshop()) return -1
+            val repaired = damageAccum.toInt()
+            damageAccum = 0f
+            pushAlert("Taller 24H: Camión reparado (0% daño)")
+            return repaired
+        }
+    }
+
+    fun restAtParkingBay(): Boolean {
+        synchronized(stateLock) {
+            if (!isAtParkingBay()) return false
+            timeOfDay = (timeOfDay + 0.25f) % 1f
+            speedMs = 0f
+            currentGear = 0
+            pushAlert("Descanso completado • Ciclo horario avanzado")
+            return true
+        }
+    }
+
+    fun finishFreeRoamNow() {
+        synchronized(stateLock) {
+            finished = true
+            speedMs = 0f
+        }
+    }
+
+    private fun pushAlert(msg: String) {
+        lastRoadAlert = msg
+        lastRoadAlertSeq += 1
+    }
+
     private fun isAtFuelStation(): Boolean {
+        if (abs(speedMs) > 7.5f) return false
+        return fuelStationPositions.any { abs(roadProgressMeters - it) <= 32f }
+    }
+
+    private fun isAtWorkshop(): Boolean {
+        if (abs(speedMs) > 7.5f) return false
+        return workshopPositions.any { abs(roadProgressMeters - it) <= 34f }
+    }
+
+    private fun isAtParkingBay(): Boolean {
         if (abs(speedMs) > 6.5f) return false
-        return fuelStationPositions.any { abs(roadProgressMeters - it) <= 28f }
+        return parkingBayPositions.any { abs(roadProgressMeters - it) <= 30f }
     }
 
     private fun targetRainFor(w: WeatherCondition): Float = when (w) {
@@ -488,31 +665,44 @@ class TruckPhysicsEngine(
     private fun spawnTraffic() {
         traffic.clear()
         val colors = listOf(
-            floatArrayOf(0.82f, 0.84f, 0.87f),
-            floatArrayOf(0.18f, 0.28f, 0.44f),
-            floatArrayOf(0.68f, 0.16f, 0.16f),
-            floatArrayOf(0.20f, 0.45f, 0.30f),
-            floatArrayOf(0.85f, 0.65f, 0.15f),
-            floatArrayOf(0.22f, 0.24f, 0.28f)
+            floatArrayOf(0.84f, 0.86f, 0.90f),
+            floatArrayOf(0.18f, 0.34f, 0.56f),
+            floatArrayOf(0.76f, 0.18f, 0.18f),
+            floatArrayOf(0.16f, 0.52f, 0.35f),
+            floatArrayOf(0.92f, 0.68f, 0.14f),
+            floatArrayOf(0.24f, 0.26f, 0.31f)
         )
-        val count = (12 * route.trafficDensity).toInt().coerceIn(6, 18)
-        val spacing = (route.simLengthMeters - 160f) / count
+        val count = (18 * route.trafficDensity).toInt().coerceIn(10, 28)
+        val spacing = (route.simLengthMeters - 180f) / count
         for (i in 0 until count) {
-            val s = 110f + i * spacing
+            val s = 120f + i * spacing
             val isOncoming = i % 2 == 1
-            val lane = if (isOncoming) -2.15f else 2.15f
-            val isTruck = i % 3 == 0
-            val baseSpeed = if (isOncoming) {
-                if (isTruck) 17f else 21f
-            } else {
-                if (isTruck) 14f else 18f
+            val lane = when {
+                isOncoming && i % 4 == 3 -> -3.65f
+                isOncoming -> -1.95f
+                i % 4 == 2 -> 3.65f
+                else -> 1.95f
+            }
+            val type = when (i % 5) {
+                0 -> TrafficVehicleType.TRUCK
+                1 -> TrafficVehicleType.SEDAN
+                2 -> TrafficVehicleType.BUS
+                3 -> TrafficVehicleType.MOTORCYCLE
+                else -> TrafficVehicleType.SEDAN
+            }
+            val baseSpeed = when (type) {
+                TrafficVehicleType.MOTORCYCLE -> if (isOncoming) 23f else 20f
+                TrafficVehicleType.SEDAN -> if (isOncoming) 21f else 18f
+                TrafficVehicleType.BUS -> if (isOncoming) 17f else 15f
+                TrafficVehicleType.TRUCK -> if (isOncoming) 16f else 13.5f
             }
             traffic.add(
                 TrafficVehicle(
                     s = s,
                     laneOffset = lane,
                     speedMs = baseSpeed,
-                    isTruck = isTruck,
+                    baseSpeedMs = baseSpeed,
+                    type = type,
                     isOncoming = isOncoming,
                     colorRgb = colors[i % colors.size]
                 )
@@ -533,6 +723,9 @@ class TruckPhysicsEngine(
             simClock += dt
             collisionFlash = max(0f, collisionFlash - dt * 2.4f)
 
+            updateTrafficLightCycles()
+            updateWiperAnimation(dt)
+
             val ctrl = inputs
             timeOfDay = (timeOfDay + dt / 135f) % 1f
             rainIntensity += (targetRainFor(weatherCondition) - rainIntensity) * min(1f, dt * 1.8f)
@@ -542,6 +735,33 @@ class TruckPhysicsEngine(
                 stepPhysics(subDt, ctrl)
             }
             nearFuelStation = isAtFuelStation()
+            nearWorkshop = isAtWorkshop()
+            nearParkingBay = isAtParkingBay()
+        }
+    }
+
+    private fun updateTrafficLightCycles() {
+        for (node in trafficLights) {
+            val cycle = (simClock + node.phaseOffsetSec) % 16f
+            node.state = when {
+                cycle < 8.5f -> TrafficLightState.GREEN
+                cycle < 11.0f -> TrafficLightState.AMBER
+                else -> TrafficLightState.RED
+            }
+        }
+    }
+
+    private fun updateWiperAnimation(dt: Float) {
+        val effectiveRate = when (wiperMode) {
+            2 -> 5.6f
+            1 -> 3.0f
+            else -> 0f
+        }
+        if (effectiveRate > 0f) {
+            wiperTimer += dt * effectiveRate
+            wiperSweepNorm = (sin(wiperTimer) * 0.5f + 0.5f)
+        } else {
+            wiperSweepNorm = max(0f, wiperSweepNorm - dt * 3.5f)
         }
     }
 
@@ -555,15 +775,12 @@ class TruckPhysicsEngine(
         }
 
         val absSpeed = abs(speedMs)
-
-        // Speed-sensitive precision steering: full lock at low speeds, refined progressive curve at highway speed
         val speedDamp = 1f / (1f + absSpeed * 0.055f)
         val maxSteerAngle = 0.56f * (0.35f + 0.65f * speedDamp)
         val targetSteer = ctrl.steerInput.coerceIn(-1f, 1f) * maxSteerAngle
         val steerRate = if (abs(ctrl.steerInput) > 0.03f) 3.8f else 5.2f
         steerWheelAngleRad += (targetSteer - steerWheelAngleRad) * min(1f, dt * steerRate)
 
-        // Automatic OR Manual 12-speed + Reverse transmission logic
         var driveForce = 0f
         var brakeForce = 0f
 
@@ -590,7 +807,6 @@ class TruckPhysicsEngine(
                         fuelLiters = max(0f, fuelLiters - dt * (0.04f + 0.14f * ctrl.throttle))
                     }
                     else -> {
-                        // Neutral revving
                         fuelLiters = max(0f, fuelLiters - dt * 0.02f)
                     }
                 }
@@ -626,11 +842,10 @@ class TruckPhysicsEngine(
         laneOffset = latOff
         tractorY = roadPt.y
         tractorPitch = roadPt.pitch
+        val prevProgress = roadProgressMeters
         roadProgressMeters = roadPt.s
 
-        // Slope gravity component
         val gravityForce = -totalMassKg * 9.81f * sin(roadPt.pitch)
-        // Aero + rolling drag
         val aeroDrag = 0.5f * 1.225f * 6.8f * 0.68f * speedMs * absSpeed
         val rollingDrag = totalMassKg * 9.81f * 0.0085f * (if (speedMs >= 0f) 1f else -1f)
 
@@ -648,22 +863,22 @@ class TruckPhysicsEngine(
             speedMs = 0f
         }
 
-        // Smooth cab pitch & roll dynamics for visual realism
         val targetPitch = (-accel * 0.014f).coerceIn(-0.045f, 0.045f)
         val lateralAccel = speedMs * speedMs * (steerWheelAngleRad / 3.8f)
         val targetRoll = (-lateralAccel * 0.009f).coerceIn(-0.065f, 0.065f)
         cabPitchOffset += (targetPitch - cabPitchOffset) * min(1f, dt * 8f)
         cabRollOffset += (targetRoll - cabRollOffset) * min(1f, dt * 7f)
 
-        // Bicycle kinematics for tractor
         val wheelbase = 3.8f
         val yawRate = if (abs(speedMs) > 0.05f) (speedMs / wheelbase) * tanApprox(steerWheelAngleRad) else 0f
         tractorYaw += yawRate * dt
-        tractorX += sin(tractorYaw) * speedMs * dt
-        tractorZ += -cos(tractorYaw) * speedMs * dt
+        val stepDx = sin(tractorYaw) * speedMs * dt
+        val stepDz = -cos(tractorYaw) * speedMs * dt
+        tractorX += stepDx
+        tractorZ += stepDz
+        totalDrivenMeters += abs(speedMs) * dt
         wheelSpinAngle = (wheelSpinAngle + (speedMs / 0.52f) * dt) % (2f * PI.toFloat())
 
-        // Articulated fifth-wheel trailer kinematics
         val trailerLen = 8.4f
         val hitchAngleDiff = normalizeAngle(tractorYaw - trailerYaw)
         val maxJackknife = 1.15f
@@ -675,7 +890,6 @@ class TruckPhysicsEngine(
         }
         updateTrailerPosition()
 
-        // Guardrail boundary containment & damage
         val (newIdx, newLat, newRoadPt) = road.project(tractorX, tractorZ, roadIndexHint)
         roadIndexHint = newIdx
         laneOffset = newLat
@@ -687,7 +901,6 @@ class TruckPhysicsEngine(
             val rightZ = sin(newRoadPt.yaw)
             tractorX -= rightX * sign * penetration
             tractorZ -= rightZ * sign * penetration
-            // Gently align heading back toward road
             val yawDiff = normalizeAngle(newRoadPt.yaw - tractorYaw)
             tractorYaw += yawDiff * min(1f, dt * 6.5f)
             if (absSpeed > 4.5f && penetration > 0.04f) {
@@ -698,10 +911,29 @@ class TruckPhysicsEngine(
             updateTrailerPosition()
         }
 
-        // Update AI Traffic & check collisions
+        // Check Toll Booth crossings
+        tollPositions.forEachIndexed { idx, tollS ->
+            if (prevProgress < tollS && newRoadPt.s >= tollS && idx !in triggeredTolls) {
+                triggeredTolls.add(idx)
+                tollPaidCount += 1
+                pushAlert("Peaje abonado: -$${route.tollFeeCredits} créditos")
+            }
+        }
+
+        // Check Red Light violations
+        trafficLights.forEachIndexed { idx, light ->
+            if (prevProgress < light.s && newRoadPt.s >= light.s && idx !in triggeredRedLights) {
+                if (light.state == TrafficLightState.RED && speedMs > 4.2f) {
+                    triggeredRedLights.add(idx)
+                    redLightFineCount += 1
+                    collisionFlash = 0.65f
+                    pushAlert("¡Multa semáforo en rojo! -$250 créditos")
+                }
+            }
+        }
+
         updateTraffic(dt, checkCollisions = true, roadYawForPush = newRoadPt.yaw)
 
-        // Engine RPM calculation
         val targetRpm = when {
             currentGear == 0 -> 680f + ctrl.throttle * 950f
             currentGear < 0 -> 720f + (absSpeed / 8.5f) * 1100f
@@ -713,10 +945,27 @@ class TruckPhysicsEngine(
         }
         rpm += (targetRpm - rpm) * min(1f, dt * 8f)
 
-        // Check route completion
         if (roadProgressMeters >= route.simLengthMeters) {
-            finished = true
-            speedMs = 0f
+            if (route.isFreeRoam) {
+                // Seamless open-world loop back to corridor start while preserving odometer & damage
+                val startPt = road.sampleAtDistance(24f)
+                val rightX = cos(startPt.yaw)
+                val rightZ = sin(startPt.yaw)
+                tractorX = startPt.x + rightX * laneOffset.coerceIn(-4f, 4f)
+                tractorZ = startPt.z + rightZ * laneOffset.coerceIn(-4f, 4f)
+                tractorY = startPt.y
+                tractorYaw = startPt.yaw
+                trailerYaw = startPt.yaw
+                roadIndexHint = 6
+                roadProgressMeters = 24f
+                triggeredTolls.clear()
+                triggeredRedLights.clear()
+                updateTrailerPosition()
+                pushAlert("Nueva vuelta en Mundo Abierto")
+            } else {
+                finished = true
+                speedMs = 0f
+            }
         }
     }
 
@@ -739,34 +988,20 @@ class TruckPhysicsEngine(
         var nextX = driverX + fwdX * moveVel * dt
         var nextZ = driverZ + fwdZ * moveVel * dt
 
-        // Keep the walking driver outside the tractor & trailer hulls
         val resolvedTractor = pushOutsideOrientedBox(
-            px = nextX,
-            pz = nextZ,
-            bx = tractorX,
-            bz = tractorZ,
-            byaw = tractorYaw,
-            halfWidth = 1.55f,
-            minLocalZ = -3.0f,
-            maxLocalZ = 2.6f
+            px = nextX, pz = nextZ, bx = tractorX, bz = tractorZ, byaw = tractorYaw,
+            halfWidth = 1.55f, minLocalZ = -3.0f, maxLocalZ = 2.6f
         )
         nextX = resolvedTractor.first
         nextZ = resolvedTractor.second
 
         val resolvedTrailer = pushOutsideOrientedBox(
-            px = nextX,
-            pz = nextZ,
-            bx = trailerX,
-            bz = trailerZ,
-            byaw = trailerYaw,
-            halfWidth = 1.60f,
-            minLocalZ = -4.6f,
-            maxLocalZ = 5.15f
+            px = nextX, pz = nextZ, bx = trailerX, bz = trailerZ, byaw = trailerYaw,
+            halfWidth = 1.60f, minLocalZ = -4.6f, maxLocalZ = 5.15f
         )
         nextX = resolvedTrailer.first
         nextZ = resolvedTrailer.second
 
-        // Keep driver along road/shoulder corridor near the parked rig
         val (_, latOff, roadPt) = road.project(nextX, nextZ, roadIndexHint)
         val maxDriverLat = roadHalfWidth + 3.2f
         if (abs(latOff) > maxDriverLat) {
@@ -797,14 +1032,8 @@ class TruckPhysicsEngine(
     }
 
     private fun pushOutsideOrientedBox(
-        px: Float,
-        pz: Float,
-        bx: Float,
-        bz: Float,
-        byaw: Float,
-        halfWidth: Float,
-        minLocalZ: Float,
-        maxLocalZ: Float
+        px: Float, pz: Float, bx: Float, bz: Float, byaw: Float,
+        halfWidth: Float, minLocalZ: Float, maxLocalZ: Float
     ): Pair<Float, Float> {
         val fwdX = sin(byaw)
         val fwdZ = -cos(byaw)
@@ -855,16 +1084,58 @@ class TruckPhysicsEngine(
     }
 
     private fun updateTraffic(dt: Float, checkCollisions: Boolean, roadYawForPush: Float) {
-        val absSpeed = abs(speedMs)
-        for (v in traffic) {
-            v.s += (if (v.isOncoming) -v.speedMs else v.speedMs) * dt
+        for (i in traffic.indices) {
+            val v = traffic[i]
+            val dir = if (v.isOncoming) -1f else 1f
+
+            // Intelligent traffic rule compliance: stop for red/amber lights & slower vehicles ahead
+            var targetSpeed = v.baseSpeedMs
+            for (light in trafficLights) {
+                val distToStop = (light.s - v.s) * dir
+                if (distToStop in 5f..38f && light.state != TrafficLightState.GREEN) {
+                    targetSpeed = if (distToStop < 12f) 0f else min(targetSpeed, (distToStop - 5f) * 0.45f)
+                }
+            }
+
+            // Yield to vehicles ahead in the same lane
+            for (j in traffic.indices) {
+                if (i == j) continue
+                val other = traffic[j]
+                if (other.isOncoming != v.isOncoming) continue
+                if (abs(other.laneOffset - v.laneOffset) > 1.3f) continue
+                val gap = (other.s - v.s) * dir
+                if (gap in 2f..24f) {
+                    val safeMatch = if (gap < 11f) 0f else min(targetSpeed, other.speedMs * 0.92f)
+                    targetSpeed = min(targetSpeed, safeMatch)
+                }
+            }
+            // Yield to player truck if ahead in same lane
+            if (!v.isOncoming && abs(laneOffset - v.laneOffset) < 1.8f) {
+                val gapToPlayer = roadProgressMeters - v.s
+                if (gapToPlayer in 8f..26f) {
+                    targetSpeed = min(targetSpeed, max(0f, speedMs * 0.9f))
+                }
+            }
+
+            val prevSpeed = v.speedMs
+            val rate = if (targetSpeed < v.speedMs) 7.5f else 3.2f
+            v.speedMs += (targetSpeed - v.speedMs) * min(1f, dt * rate)
+            v.braking = v.speedMs < prevSpeed - 0.05f || v.speedMs < 0.8f
+
+            v.s += dir * v.speedMs * dt
             if (v.s > route.simLengthMeters + 120f) v.s = 40f
             if (v.s < 20f) v.s = route.simLengthMeters + 80f
 
             if (checkCollisions) {
                 val distAlong = abs(v.s - roadProgressMeters)
-                if (distAlong < 6.8f && abs(v.laneOffset - laneOffset) < 2.25f) {
-                    val relSpeed = abs(speedMs - (if (v.isOncoming) -v.speedMs else v.speedMs))
+                val hitHalfLen = when (v.type) {
+                    TrafficVehicleType.TRUCK, TrafficVehicleType.BUS -> 7.0f
+                    TrafficVehicleType.MOTORCYCLE -> 4.2f
+                    TrafficVehicleType.SEDAN -> 5.6f
+                }
+                val hitHalfWidth = if (v.type == TrafficVehicleType.MOTORCYCLE) 1.65f else 2.20f
+                if (distAlong < hitHalfLen && abs(v.laneOffset - laneOffset) < hitHalfWidth) {
+                    val relSpeed = abs(speedMs - (dir * v.speedMs))
                     if (relSpeed > 2.5f) {
                         damageAccum = min(100f, damageAccum + relSpeed * 0.45f)
                         collisionFlash = 1f
@@ -874,7 +1145,7 @@ class TruckPhysicsEngine(
                         val rightZ = sin(roadYawForPush)
                         tractorX += rightX * push
                         tractorZ += rightZ * push
-                        v.s += if (v.isOncoming) -35f else 35f
+                        v.s += if (v.isOncoming) -32f else 32f
                     }
                 }
             }
@@ -940,11 +1211,18 @@ class TruckPhysicsEngine(
             out.timeOfDay = timeOfDay
             out.rainIntensity = rainIntensity
             out.fogDensity = fogDensity
+            out.wiperSweepNorm = wiperSweepNorm
             out.nearFuelStation = nearFuelStation
             out.trafficCopy.clear()
             for (v in traffic) {
                 out.trafficCopy.add(v.copy())
             }
+            out.trafficLightsCopy.clear()
+            for (tl in trafficLights) {
+                out.trafficLightsCopy.add(tl.copy())
+            }
+            out.remoteConvoyPlayers.clear()
+            out.remoteConvoyPlayers.addAll(remoteConvoyList)
         }
     }
 
@@ -959,6 +1237,7 @@ class TruckPhysicsEngine(
             }
             val progress = (roadProgressMeters / route.simLengthMeters).coerceIn(0f, 1f)
             val remKm = route.displayDistanceKm * (1.0 - progress)
+            val drivenKm = (totalDrivenMeters / route.simLengthMeters) * route.displayDistanceKm
             val previewPt = road.sampleAtDistance(roadProgressMeters + 72f)
             val ctrl = inputs
             val fuelPct = ((fuelLiters / truck.fuelCapacityLiters) * 100f).toInt().coerceIn(0, 100)
@@ -968,6 +1247,17 @@ class TruckPhysicsEngine(
                 timeOfDay < 0.66f -> "Día"
                 else -> "Atardecer"
             }
+
+            val activeLm = landmarks.firstOrNull { abs(it.s - roadProgressMeters) <= it.spanMeters }
+            val inTunnel = activeLm?.kind == LandmarkKind.TUNNEL
+            val onBridge = activeLm?.kind == LandmarkKind.BRIDGE
+            val isSecRoad = activeLm?.kind == LandmarkKind.SECONDARY_ROAD_ZONE
+            val zoneLabel = activeLm?.label ?: if (route.isFreeRoam) "Autopista Mundo Abierto" else "Autopista Principal"
+
+            val upcomingLight = trafficLights
+                .filter { it.s > roadProgressMeters - 2f && it.s - roadProgressMeters < 110f }
+                .minByOrNull { it.s - roadProgressMeters }
+
             return TelemetrySnapshot(
                 speedKmh = kmh,
                 rpm = rpm.toInt(),
@@ -977,15 +1267,22 @@ class TruckPhysicsEngine(
                 fuelPercent = fuelPct,
                 lowFuelWarning = fuelPct <= 20,
                 nearFuelStation = nearFuelStation,
+                nearWorkshop = nearWorkshop,
+                nearParkingBay = nearParkingBay,
+                activeZoneLabel = zoneLabel,
+                isSecondaryRoad = isSecRoad,
+                inTunnel = inTunnel,
+                onBridge = onBridge,
                 damagePercent = damageAccum.toInt().coerceIn(0, 100),
                 progressFraction = progress,
                 roadProgressMeters = roadProgressMeters,
+                totalDrivenKm = drivenKm.coerceAtLeast(0.5),
                 remainingDisplayKm = remKm,
                 elapsedSeconds = elapsedSimTime.toLong().coerceAtLeast(1L),
                 upcomingCurvature = previewPt.curvature,
                 laneOffset = laneOffset,
-                speedLimitKmh = route.speedLimitKmh,
-                speeding = kmh > route.speedLimitKmh + 5,
+                speedLimitKmh = if (isSecRoad) (route.speedLimitKmh - 20).coerceAtLeast(50) else route.speedLimitKmh,
+                speeding = kmh > (if (isSecRoad) route.speedLimitKmh - 15 else route.speedLimitKmh + 5),
                 finished = finished,
                 collisionFlash = collisionFlash,
                 steerAngleNorm = (steerWheelAngleRad / 0.52f).coerceIn(-1f, 1f),
@@ -994,12 +1291,20 @@ class TruckPhysicsEngine(
                 headlightsOn = ctrl.headlightsOn,
                 leftBlinker = ctrl.leftBlinker,
                 rightBlinker = ctrl.rightBlinker,
+                wiperMode = wiperMode,
+                wiperSweepNorm = wiperSweepNorm,
                 driverOnFoot = driverOnFoot,
                 nearCabDoor = nearCabDoor,
                 canExitTruck = !driverOnFoot && abs(speedMs) < 1.8f,
                 timeOfDay = timeOfDay,
                 dayPhaseLabel = phaseLabel,
-                weatherCondition = weatherCondition
+                weatherCondition = weatherCondition,
+                upcomingTrafficLight = upcomingLight?.state,
+                upcomingTrafficLightDistMeters = upcomingLight?.let { max(0, (it.s - roadProgressMeters).toInt()) } ?: 0,
+                redLightFineCount = redLightFineCount,
+                tollPaidCount = tollPaidCount,
+                lastRoadAlert = lastRoadAlert,
+                lastRoadAlertSeq = lastRoadAlertSeq
             )
         }
     }
@@ -1055,6 +1360,9 @@ class RenderSnapshot {
     var timeOfDay = 0.36f
     var rainIntensity = 0f
     var fogDensity = 0f
+    var wiperSweepNorm = 0f
     var nearFuelStation = false
-    val trafficCopy = ArrayList<TrafficVehicle>(20)
+    val trafficCopy = ArrayList<TrafficVehicle>(32)
+    val trafficLightsCopy = ArrayList<TrafficLightNode>(8)
+    val remoteConvoyPlayers = ArrayList<ConvoyPlayer>(8)
 }

@@ -7,9 +7,11 @@ import com.example.data.CareerRepository
 import com.example.model.CameraMode
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
+import com.example.model.LiveryStyle
 import com.example.model.RouteSpec
 import com.example.model.SteeringMode
 import com.example.model.TruckSpec
+import com.example.model.WorkshopCatalog
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -110,6 +112,81 @@ class CareerViewModel(
             }.onFailure { err ->
                 _actionMessage.value = err.localizedMessage ?: "No se pudo completar la operación"
             }
+        }
+    }
+
+    fun saveWorkshopCustomization(
+        paintColorHex: String,
+        liveryStyle: LiveryStyle,
+        bullbar: Boolean,
+        roofLightbar: Boolean,
+        aeroSpoiler: Boolean,
+        chromeExhaust: Boolean,
+        totalCostCredits: Long
+    ) {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = repository.saveWorkshopCustomization(
+                currentProfile = current,
+                paintColorHex = paintColorHex,
+                liveryStyle = liveryStyle,
+                bullbarInstalled = bullbar,
+                roofLightbarInstalled = roofLightbar,
+                aeroSpoilerInstalled = aeroSpoiler,
+                chromeExhaustInstalled = chromeExhaust,
+                totalCostCredits = totalCostCredits
+            )
+            _isBusy.value = false
+            result.onSuccess {
+                _actionMessage.value = if (totalCostCredits > 0L) {
+                    "Personalización aplicada (-$$totalCostCredits créditos)"
+                } else {
+                    "Configuración de taller actualizada"
+                }
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo aplicar en el taller"
+            }
+        }
+    }
+
+    fun repairTruckInGarage() {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        val dmg = current.truckDamagePercent.coerceIn(0L, 100L)
+        if (dmg <= 0L) {
+            _actionMessage.value = "El camión está al 100% sin daños."
+            return
+        }
+        val cost = dmg * WorkshopCatalog.REPAIR_COST_PER_PERCENT
+        if (current.credits < cost) {
+            _actionMessage.value = "Créditos insuficientes para reparar (requiere $$cost)."
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = repository.repairTruckOrAdjustCredits(
+                currentProfile = current,
+                creditsDelta = -cost,
+                newDamagePercent = 0L
+            )
+            _isBusy.value = false
+            result.onSuccess {
+                _actionMessage.value = "Camión reparado al 0% de daño (-$$cost)"
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo reparar el camión"
+            }
+        }
+    }
+
+    fun adjustCreditsForRoadEvent(deltaCredits: Long, damagePercent: Int? = null) {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        val nextDamage = damagePercent?.toLong()?.coerceIn(0L, 100L) ?: current.truckDamagePercent
+        viewModelScope.launch {
+            repository.repairTruckOrAdjustCredits(
+                currentProfile = current,
+                creditsDelta = deltaCredits,
+                newDamagePercent = nextDamage
+            )
         }
     }
 

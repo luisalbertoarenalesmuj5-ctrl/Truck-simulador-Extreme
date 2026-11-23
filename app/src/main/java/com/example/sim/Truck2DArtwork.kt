@@ -1,5 +1,7 @@
 package com.example.sim
 
+import android.graphics.Paint
+import android.graphics.Typeface
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -12,8 +14,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.nativeCanvas
+import com.example.model.CargoTrailerType
+import com.example.model.LiveryStyle
 import com.example.model.TruckCabStyle
 import com.example.model.TruckSpec
+import com.example.model.TruckVisualConfig
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -21,12 +27,35 @@ import kotlin.math.sin
 
 object Truck2DArtwork {
 
-    /**
-     * Draws a full articulated 2D HD Semi-Truck + Cargo Trailer in Side-Profile (facing +X / right).
-     */
+    private val convoyTagBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(210, 14, 22, 34)
+    }
+    private val convoyTagBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(56, 189, 248)
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f
+    }
+    private val convoyTagTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+
+    fun parseHexColor(hex: String, fallback: Color): Color {
+        return try {
+            Color(android.graphics.Color.parseColor(hex))
+        } catch (_: Throwable) {
+            fallback
+        }
+    }
+
     fun DrawScope.drawTruckRig2DSide(
         truck: TruckSpec,
         routeId: String,
+        visualConfig: TruckVisualConfig = TruckVisualConfig(
+            paintHex = truck.defaultPaintHex,
+            trailerType = truck.defaultTrailerType
+        ),
         anchorX: Float,
         groundY: Float,
         scale: Float,
@@ -45,7 +74,8 @@ object Truck2DArtwork {
         driverInsideCab: Boolean = true,
         showTrailer: Boolean = true
     ) {
-        val primary = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
+        val fallbackPrimary = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
+        val primary = parseHexColor(visualConfig.paintHex, fallbackPrimary)
         val primaryDark = darken(primary, 0.50f)
         val primaryLight = lighten(primary, 0.34f)
         val accent = Color(truck.accentColorRgb[0], truck.accentColorRgb[1], truck.accentColorRgb[2])
@@ -63,7 +93,7 @@ object Truck2DArtwork {
             size = Size(rigRight - rigLeft, 0.48f * scale)
         )
 
-        // 2. Mission-matched 2D HD Trailer (to the left of fifth-wheel anchorX)
+        // 2. Mission-matched 2D HD Trailer
         if (showTrailer) {
             withTransform({
                 rotate(
@@ -73,7 +103,7 @@ object Truck2DArtwork {
                 translate(top = bouncePx * 0.65f)
             }) {
                 drawTrailer2DSide(
-                    routeId = routeId,
+                    trailerType = visualConfig.trailerType,
                     fifthWheelX = anchorX,
                     groundY = groundY,
                     scale = scale,
@@ -98,14 +128,12 @@ object Truck2DArtwork {
             )
             translate(top = bouncePx)
         }) {
-            // Heavy steel C-channel chassis frame
             drawRoundRect(
                 brush = Brush.verticalGradient(listOf(Color(0xFF475569), Color(0xFF1E293B), Color(0xFF0F172A))),
                 topLeft = Offset(anchorX - 2.15f * scale, chassisTopY),
                 size = Size(5.45f * scale, 0.40f * scale),
                 cornerRadius = CornerRadius(0.08f * scale, 0.08f * scale)
             )
-            // Air suspension bellows + brake chambers
             for (ax in floatArrayOf(-1.56f, -0.48f)) {
                 drawRoundRect(
                     color = Color(0xFF111827),
@@ -114,7 +142,6 @@ object Truck2DArtwork {
                     cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
                 )
             }
-            // Fifth wheel heavy coupling plate + coiled air brake lines
             drawRoundRect(
                 color = Color(0xFF64748B),
                 topLeft = Offset(anchorX - 0.55f * scale, chassisTopY - 0.15f * scale),
@@ -122,7 +149,6 @@ object Truck2DArtwork {
                 cornerRadius = CornerRadius(0.05f * scale, 0.05f * scale)
             )
             if (showTrailer) {
-                // Red & Blue coiled pneumatic Suzie hoses behind cab
                 for (ci in 0..2) {
                     val hx = anchorX + (0.04f + ci * 0.08f) * scale
                     drawLine(
@@ -135,7 +161,7 @@ object Truck2DArtwork {
                 }
             }
 
-            // Brushed aluminum/chrome side diesel tank + aluminum entry steps + battery box
+            // Brushed aluminum/chrome diesel tank & steps
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     listOf(Color(0xFF94A3B8), Color(0xFFF8FAFC), Color(0xFFCBD5E1), Color(0xFF475569), Color(0xFF1E293B))
@@ -150,7 +176,6 @@ object Truck2DArtwork {
                 size = Size(0.48f * scale, 0.40f * scale),
                 cornerRadius = CornerRadius(0.05f * scale, 0.05f * scale)
             )
-            // Chrome fuel tank straps + filler cap
             for (sx in floatArrayOf(0.14f, 0.55f, 0.96f)) {
                 drawRect(
                     color = Color(0xFF0F172A),
@@ -160,7 +185,6 @@ object Truck2DArtwork {
             }
             drawCircle(color = Color(0xFFE2E8F0), radius = 0.07f * scale, center = Offset(anchorX + 0.34f * scale, groundY - 0.94f * scale))
 
-            // Rear tandem fenders + mudflaps
             for (fx in floatArrayOf(-1.62f, -0.52f)) {
                 drawArc(
                     color = Color(0xFF171C23),
@@ -178,11 +202,17 @@ object Truck2DArtwork {
                 size = Size(0.10f * scale, 0.54f * scale)
             )
 
-            // Chrome Vertical Exhaust Stacks + Heat Shields + Diesel Exhaust Smoke
-            val stackCount = if (truck.cabStyle == TruckCabStyle.AMERICAN_CONVENTIONAL) 2 else 1
+            // Chrome Vertical Exhaust Stacks (doubled / taller if chromeExhaustInstalled)
+            val stackCount = when {
+                visualConfig.chromeExhaustInstalled -> 2
+                truck.cabStyle == TruckCabStyle.AMERICAN_CONVENTIONAL -> 2
+                else -> 1
+            }
+            val extraTall = if (visualConfig.chromeExhaustInstalled) 0.38f else 0f
             for (si in 0 until stackCount) {
                 val stackX = anchorX + (0.28f - si * 0.16f) * scale
-                val stackTopY = groundY - if (truck.id == "colossus_w900") 3.82f * scale else 3.48f * scale
+                val baseH = if (truck.id == "colossus_w900") 3.82f else 3.48f
+                val stackTopY = groundY - (baseH + extraTall) * scale
                 drawRoundRect(
                     brush = Brush.horizontalGradient(
                         listOf(Color(0xFF64748B), Color(0xFFF8FAFC), Color(0xFF94A3B8), Color(0xFF334155)),
@@ -198,7 +228,6 @@ object Truck2DArtwork {
                     topLeft = Offset(stackX + 0.025f * scale, stackTopY + 0.55f * scale),
                     size = Size(0.09f * scale, 0.85f * scale)
                 )
-                // Animated diesel exhaust puffs
                 if (throttleLevel > 0.14f || ((simClock * 2f).toInt() % 3 == 0)) {
                     val puffCount = if (throttleLevel > 0.25f) 5 else 2
                     for (p in 0 until puffCount) {
@@ -216,10 +245,11 @@ object Truck2DArtwork {
                 }
             }
 
-            // 4. Cab Bodywork (Euro Cabover vs American Conventional)
+            // 4. Cab Bodywork + Livery + Accessories
             if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) {
                 drawEuroCabSide(
                     truck = truck,
+                    visualConfig = visualConfig,
                     anchorX = anchorX,
                     groundY = groundY,
                     scale = scale,
@@ -227,11 +257,14 @@ object Truck2DArtwork {
                     primaryLight = primaryLight,
                     primaryDark = primaryDark,
                     accent = accent,
-                    driverInsideCab = driverInsideCab
+                    driverInsideCab = driverInsideCab,
+                    headlightsOn = headlightsOn,
+                    nightFactor = nightFactor
                 )
             } else {
                 drawAmericanCabSide(
                     truck = truck,
+                    visualConfig = visualConfig,
                     anchorX = anchorX,
                     groundY = groundY,
                     scale = scale,
@@ -239,21 +272,38 @@ object Truck2DArtwork {
                     primaryLight = primaryLight,
                     primaryDark = primaryDark,
                     accent = accent,
-                    driverInsideCab = driverInsideCab
+                    driverInsideCab = driverInsideCab,
+                    headlightsOn = headlightsOn,
+                    nightFactor = nightFactor
+                )
+            }
+
+            // Optional Chrome Bullbar Bumper Guard
+            val frontBumperX = anchorX + 3.28f * scale
+            if (visualConfig.bullbarInstalled) {
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFF8FAFC), Color(0xFF94A3B8), Color(0xFF475569))),
+                    topLeft = Offset(frontBumperX - 0.04f * scale, groundY - 1.38f * scale),
+                    size = Size(0.26f * scale, 0.82f * scale),
+                    cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale),
+                    style = Stroke(width = 0.08f * scale)
+                )
+                drawLine(
+                    color = Color(0xFFE2E8F0),
+                    start = Offset(frontBumperX - 0.02f * scale, groundY - 1.04f * scale),
+                    end = Offset(frontBumperX + 0.22f * scale, groundY - 1.04f * scale),
+                    strokeWidth = 0.07f * scale
                 )
             }
 
             // 5. Headlights, Fog Lamps, Taillights, Blinkers & Volumetric 2D Light Cones
-            val frontBumperX = anchorX + 3.28f * scale
             val headY = groundY - 0.86f * scale
-
             drawRoundRect(
                 color = if (headlightsOn) Color(0xFFFFFCE0) else Color(0xFF9EAAB8),
                 topLeft = Offset(frontBumperX - 0.14f * scale, headY - 0.12f * scale),
                 size = Size(0.16f * scale, 0.20f * scale),
                 cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
             )
-            // Lower fog lamp
             drawCircle(
                 color = if (headlightsOn) Color(0xFFFFE082) else Color(0xFF64748B),
                 radius = 0.055f * scale,
@@ -295,7 +345,6 @@ object Truck2DArtwork {
                 )
             }
 
-            // Rear frame brake light + blinker
             val rearFrameX = anchorX - 2.15f * scale
             drawRoundRect(
                 color = if (braking) Color(0xFFFF2424) else Color(0xFF7D1111),
@@ -331,6 +380,7 @@ object Truck2DArtwork {
 
     private fun DrawScope.drawEuroCabSide(
         truck: TruckSpec,
+        visualConfig: TruckVisualConfig,
         anchorX: Float,
         groundY: Float,
         scale: Float,
@@ -338,9 +388,11 @@ object Truck2DArtwork {
         primaryLight: Color,
         primaryDark: Color,
         accent: Color,
-        driverInsideCab: Boolean
+        driverInsideCab: Boolean,
+        headlightsOn: Boolean,
+        nightFactor: Float
     ) {
-        val isHighRoof = truck.id == "valkyrie_s730"
+        val isHighRoof = truck.id == "valkyrie_s730" || truck.id == "carrier_trans9"
         val roofY = groundY - (if (isHighRoof) 3.70f else 3.44f) * scale
         val cabLeft = anchorX + 0.36f * scale
         val cabRight = anchorX + 3.24f * scale
@@ -365,7 +417,6 @@ object Truck2DArtwork {
                 endY = groundY - 0.70f * scale
             )
         )
-        // Specular metallic clearcoat reflection band across cab waist
         drawLine(
             color = Color.White.copy(alpha = 0.20f),
             start = Offset(cabLeft + 0.08f * scale, beltY + 0.06f * scale),
@@ -373,24 +424,58 @@ object Truck2DArtwork {
             strokeWidth = 0.06f * scale
         )
 
-        // Metallic roof aero deflector spoiler + roof lightbar
+        // Aero Roof Deflector Spoiler (extra prominent if aeroSpoilerInstalled)
+        val spoilerLift = if (visualConfig.aeroSpoilerInstalled) 0.36f else 0.14f
         val spoilerPath = Path().apply {
             moveTo(cabLeft + 0.05f * scale, roofY + 0.08f * scale)
-            lineTo(cabLeft - 0.28f * scale, roofY - 0.14f * scale)
-            lineTo(cabLeft + 0.98f * scale, roofY)
+            lineTo(cabLeft - 0.32f * scale, roofY - spoilerLift * scale)
+            lineTo(cabLeft + 1.12f * scale, roofY)
             close()
         }
-        drawPath(spoilerPath, primaryDark)
+        drawPath(spoilerPath, if (visualConfig.aeroSpoilerInstalled) accent else primaryDark)
 
-        // Fleet accent stripe
-        val stripePath = Path().apply {
-            moveTo(cabLeft + 0.04f * scale, beltY + 0.18f * scale)
-            lineTo(cabRight - 0.06f * scale, beltY + 0.26f * scale)
-            lineTo(cabRight - 0.04f * scale, beltY + 0.42f * scale)
-            lineTo(cabLeft + 0.04f * scale, beltY + 0.34f * scale)
-            close()
+        // Livery Stripe Patterns
+        drawCabLiverySide(
+            livery = visualConfig.liveryStyle,
+            cabLeft = cabLeft,
+            cabRight = cabRight,
+            roofY = roofY,
+            beltY = beltY,
+            scale = scale,
+            accent = accent
+        )
+
+        // Roof Lightbar Accessory
+        if (visualConfig.roofLightbarInstalled) {
+            val barX = cabRight - 1.15f * scale
+            val barY = roofY - 0.18f * scale
+            drawRoundRect(
+                color = Color(0xFFE2E8F0),
+                topLeft = Offset(barX, barY),
+                size = Size(0.68f * scale, 0.14f * scale),
+                cornerRadius = CornerRadius(0.05f * scale, 0.05f * scale)
+            )
+            for (li in 0..2) {
+                val lx = barX + (0.12f + li * 0.22f) * scale
+                drawCircle(
+                    color = if (headlightsOn) Color(0xFFFFF59D) else Color(0xFF94A3B8),
+                    radius = 0.08f * scale,
+                    center = Offset(lx, barY + 0.06f * scale)
+                )
+            }
+            if (headlightsOn && nightFactor > 0.15f) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(Color(0xFFFFF59D).copy(alpha = 0.45f), Color.Transparent),
+                        center = Offset(barX + 0.50f * scale, barY),
+                        radius = 0.95f * scale
+                    ),
+                    radius = 0.95f * scale,
+                    center = Offset(barX + 0.50f * scale, barY),
+                    blendMode = BlendMode.Screen
+                )
+            }
         }
-        drawPath(stripePath, accent.copy(alpha = 0.92f))
 
         // Tinted Windshield + Side Window + Driver Inside Silhouette
         val windPath = Path().apply {
@@ -426,7 +511,6 @@ object Truck2DArtwork {
             cornerRadius = CornerRadius(0.08f * scale, 0.08f * scale)
         )
         if (driverInsideCab) {
-            // Driver silhouette in seat wearing cap & orange vest
             val drvX = winLeft + winW * 0.52f
             val drvY = winTop + winH * 0.56f
             drawCircle(Color(0xFF0B1118), radius = 0.15f * scale, center = Offset(drvX, drvY - 0.14f * scale))
@@ -438,7 +522,6 @@ object Truck2DArtwork {
             )
         }
 
-        // Door seam, grab bar & chrome handle
         drawRoundRect(
             color = Color(0x55000000),
             topLeft = Offset(cabLeft + 0.96f * scale, roofY + 0.30f * scale),
@@ -451,7 +534,6 @@ object Truck2DArtwork {
             topLeft = Offset(cabLeft + 1.10f * scale, beltY + 0.16f * scale),
             size = Size(0.18f * scale, 0.06f * scale)
         )
-        // Entry steps recessed cutouts
         for (st in 0..1) {
             drawRect(
                 color = Color(0xFF0F172A),
@@ -460,7 +542,6 @@ object Truck2DArtwork {
             )
         }
 
-        // Front Grille + Bumper + Mirror
         drawRoundRect(
             color = Color(0xFF1A2028),
             topLeft = Offset(cabRight - 0.35f * scale, beltY + 0.08f * scale),
@@ -503,6 +584,7 @@ object Truck2DArtwork {
 
     private fun DrawScope.drawAmericanCabSide(
         truck: TruckSpec,
+        visualConfig: TruckVisualConfig,
         anchorX: Float,
         groundY: Float,
         scale: Float,
@@ -510,9 +592,11 @@ object Truck2DArtwork {
         primaryLight: Color,
         primaryDark: Color,
         accent: Color,
-        driverInsideCab: Boolean
+        driverInsideCab: Boolean,
+        headlightsOn: Boolean,
+        nightFactor: Float
     ) {
-        val isClassic = truck.id == "colossus_w900"
+        val isClassic = truck.id == "colossus_w900" || truck.id == "kodiak_flatbed"
         val sleeperTopY = groundY - (if (isClassic) 3.45f else 3.55f) * scale
         val cabLeft = anchorX + 0.22f * scale
         val cowlX = anchorX + 2.02f * scale
@@ -540,12 +624,55 @@ object Truck2DArtwork {
             )
         )
 
-        drawLine(
-            color = accent.copy(alpha = 0.92f),
-            start = Offset(cabLeft + 0.05f * scale, beltY + 0.14f * scale),
-            end = Offset(noseX - 0.08f * scale, beltY + (if (isClassic) 0.14f else 0.26f) * scale),
-            strokeWidth = 0.11f * scale
+        if (visualConfig.aeroSpoilerInstalled) {
+            val wing = Path().apply {
+                moveTo(cabLeft + 0.08f * scale, sleeperTopY + 0.04f * scale)
+                lineTo(cabLeft - 0.24f * scale, sleeperTopY - 0.32f * scale)
+                lineTo(cabLeft + 0.92f * scale, sleeperTopY)
+                close()
+            }
+            drawPath(wing, accent)
+        }
+
+        drawCabLiverySide(
+            livery = visualConfig.liveryStyle,
+            cabLeft = cabLeft,
+            cabRight = noseX - 0.08f * scale,
+            roofY = sleeperTopY,
+            beltY = beltY,
+            scale = scale,
+            accent = accent
         )
+
+        if (visualConfig.roofLightbarInstalled) {
+            val barX = cowlX - 0.75f * scale
+            val barY = sleeperTopY - 0.16f * scale
+            drawRoundRect(
+                color = Color(0xFFE2E8F0),
+                topLeft = Offset(barX, barY),
+                size = Size(0.58f * scale, 0.12f * scale),
+                cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
+            )
+            for (li in 0..2) {
+                drawCircle(
+                    color = if (headlightsOn) Color(0xFFFFF59D) else Color(0xFF94A3B8),
+                    radius = 0.07f * scale,
+                    center = Offset(barX + (0.10f + li * 0.19f) * scale, barY + 0.05f * scale)
+                )
+            }
+            if (headlightsOn && nightFactor > 0.15f) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(Color(0xFFFFF59D).copy(alpha = 0.45f), Color.Transparent),
+                        center = Offset(barX + 0.45f * scale, barY),
+                        radius = 0.90f * scale
+                    ),
+                    radius = 0.90f * scale,
+                    center = Offset(barX + 0.45f * scale, barY),
+                    blendMode = BlendMode.Screen
+                )
+            }
+        }
 
         // Chrome Front Radiator Grille + Classic Bumper
         drawRoundRect(
@@ -596,7 +723,6 @@ object Truck2DArtwork {
             )
         }
 
-        // Sleeper bunk window + chrome air canister
         drawRoundRect(
             color = Color(0xFF162231),
             topLeft = Offset(cabLeft + 0.24f * scale, sleeperTopY + 0.42f * scale),
@@ -622,8 +748,81 @@ object Truck2DArtwork {
         )
     }
 
+    private fun DrawScope.drawCabLiverySide(
+        livery: LiveryStyle,
+        cabLeft: Float,
+        cabRight: Float,
+        roofY: Float,
+        beltY: Float,
+        scale: Float,
+        accent: Color
+    ) {
+        when (livery) {
+            LiveryStyle.CLASSIC -> {
+                val stripePath = Path().apply {
+                    moveTo(cabLeft + 0.04f * scale, beltY + 0.18f * scale)
+                    lineTo(cabRight - 0.06f * scale, beltY + 0.24f * scale)
+                    lineTo(cabRight - 0.04f * scale, beltY + 0.40f * scale)
+                    lineTo(cabLeft + 0.04f * scale, beltY + 0.34f * scale)
+                    close()
+                }
+                drawPath(stripePath, accent.copy(alpha = 0.92f))
+            }
+            LiveryStyle.RACING -> {
+                val racingCol = Color(0xFFFACC15)
+                drawLine(
+                    color = racingCol,
+                    start = Offset(cabLeft + 0.08f * scale, beltY + 0.14f * scale),
+                    end = Offset(cabRight - 0.08f * scale, beltY + 0.22f * scale),
+                    strokeWidth = 0.12f * scale
+                )
+                drawLine(
+                    color = Color.White,
+                    start = Offset(cabLeft + 0.08f * scale, beltY + 0.32f * scale),
+                    end = Offset(cabRight - 0.08f * scale, beltY + 0.40f * scale),
+                    strokeWidth = 0.08f * scale
+                )
+                for (ci in 0..4) {
+                    drawRect(
+                        color = if (ci % 2 == 0) racingCol else Color(0xFF0F172A),
+                        topLeft = Offset(cabLeft + (0.16f + ci * 0.18f) * scale, beltY + 0.48f * scale),
+                        size = Size(0.16f * scale, 0.14f * scale)
+                    )
+                }
+            }
+            LiveryStyle.BOLT -> {
+                val boltCol = Color(0xFF38BDF8)
+                val bolt = Path().apply {
+                    moveTo(cabLeft + 0.12f * scale, beltY + 0.56f * scale)
+                    lineTo(cabLeft + 0.95f * scale, beltY + 0.06f * scale)
+                    lineTo(cabLeft + 1.05f * scale, beltY + 0.24f * scale)
+                    lineTo(cabRight - 0.20f * scale, roofY + 0.58f * scale)
+                    lineTo(cabLeft + 1.18f * scale, beltY + 0.42f * scale)
+                    lineTo(cabLeft + 1.05f * scale, beltY + 0.24f * scale)
+                    close()
+                }
+                drawPath(bolt, boltCol.copy(alpha = 0.92f))
+            }
+            LiveryStyle.EXECUTIVE -> {
+                val gold = Color(0xFFF59E0B)
+                drawLine(
+                    color = gold,
+                    start = Offset(cabLeft + 0.08f * scale, roofY + 0.22f * scale),
+                    end = Offset(cabRight - 0.68f * scale, roofY + 0.22f * scale),
+                    strokeWidth = 0.06f * scale
+                )
+                drawLine(
+                    color = gold,
+                    start = Offset(cabLeft + 0.06f * scale, beltY + 0.26f * scale),
+                    end = Offset(cabRight - 0.06f * scale, beltY + 0.28f * scale),
+                    strokeWidth = 0.09f * scale
+                )
+            }
+        }
+    }
+
     private fun DrawScope.drawTrailer2DSide(
-        routeId: String,
+        trailerType: CargoTrailerType,
         fifthWheelX: Float,
         groundY: Float,
         scale: Float,
@@ -648,7 +847,6 @@ object Truck2DArtwork {
             drawTireSpray2D(rearX + 0.85f * scale, groundY, scale, rainIntensity, speedMs, simClock)
         }
 
-        // Steel I-beam frame + side underrun bars
         drawRect(
             color = Color(0xFF1F2630),
             topLeft = Offset(rearX + 0.15f * scale, deckY - 0.02f * scale),
@@ -665,9 +863,8 @@ object Truck2DArtwork {
             size = Size(0.22f * scale, 0.48f * scale)
         )
 
-        when (routeId) {
-            "desert_night" -> {
-                // Polished Chrome ADR Fuel Tanker + top catwalk rail + hazard diamond
+        when (trailerType) {
+            CargoTrailerType.FUEL_TANKER -> {
                 val tankTopY = groundY - 3.35f * scale
                 val tankH = deckY - tankTopY
                 drawRoundRect(
@@ -680,7 +877,6 @@ object Truck2DArtwork {
                     size = Size(trailerW - 0.35f * scale, tankH),
                     cornerRadius = CornerRadius(0.68f * scale, 0.68f * scale)
                 )
-                // Top safety rail
                 drawLine(
                     color = Color(0xFF94A3B8),
                     start = Offset(rearX + 1.2f * scale, tankTopY - 0.12f * scale),
@@ -700,99 +896,168 @@ object Truck2DArtwork {
                     size = Size(0.65f * scale, 0.44f * scale)
                 )
             }
-            "alpine_pass", "storm_summit" -> {
+            CargoTrailerType.TIMBER_LOGS -> {
+                // Heavy steel bunk platform + vertical stakes + stacked pine logs
                 drawRoundRect(
                     color = Color(0xFF28303B),
                     topLeft = Offset(rearX, deckY - 0.24f * scale),
                     size = Size(trailerW, 0.26f * scale),
                     cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
                 )
-                if (routeId == "alpine_pass") {
-                    val exX = rearX + trailerW * 0.42f
-                    val exBaseY = deckY - 0.24f * scale
-                    // Crawler tracks + rollers
-                    drawRoundRect(
-                        color = Color(0xFF15191F),
-                        topLeft = Offset(exX - 1.55f * scale, exBaseY - 0.52f * scale),
-                        size = Size(3.10f * scale, 0.52f * scale),
-                        cornerRadius = CornerRadius(0.24f * scale, 0.24f * scale)
-                    )
-                    for (tr in -3..3) {
-                        drawCircle(Color(0xFF475569), radius = 0.12f * scale, center = Offset(exX + tr * 0.36f * scale, exBaseY - 0.26f * scale))
+                val logRows = 3
+                val logCols = 2
+                for (row in 0 until logRows) {
+                    val ly = deckY - (0.68f + row * 0.48f) * scale
+                    val lCol = if (row % 2 == 0) Color(0xFF784B2A) else Color(0xFF5D3A20)
+                    for (col in 0 until logCols) {
+                        val lx = rearX + (0.35f + col * 5.2f) * scale
+                        val lw = 5.0f * scale
+                        drawRoundRect(
+                            brush = Brush.verticalGradient(listOf(lighten(lCol, 0.25f), lCol, darken(lCol, 0.6f))),
+                            topLeft = Offset(lx, ly),
+                            size = Size(lw, 0.44f * scale),
+                            cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
+                        )
+                        drawCircle(Color(0xFFD6B083), radius = 0.18f * scale, center = Offset(lx + 0.15f * scale, ly + 0.22f * scale))
                     }
-                    // Heavy yellow CAT upper structure
+                }
+                // Steel vertical log bunks & orange tie chains
+                for (bx in floatArrayOf(0.12f, 0.38f, 0.64f, 0.88f)) {
+                    val sx = rearX + trailerW * bx
+                    drawRect(
+                        color = Color(0xFFEA580C),
+                        topLeft = Offset(sx, deckY - 2.35f * scale),
+                        size = Size(0.16f * scale, 2.15f * scale)
+                    )
+                }
+            }
+            CargoTrailerType.CAR_CARRIER -> {
+                // Double-deck open steel car transporter carrying 3 colorful 2D cars
+                drawRoundRect(
+                    color = Color(0xFF1E293B),
+                    topLeft = Offset(rearX, deckY - 0.22f * scale),
+                    size = Size(trailerW, 0.24f * scale),
+                    cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
+                )
+                // Upper steel deck + trusses
+                val upperDeckY = deckY - 1.55f * scale
+                drawRect(
+                    color = Color(0xFF334155),
+                    topLeft = Offset(rearX + 0.20f * scale, upperDeckY),
+                    size = Size(trailerW - 0.40f * scale, 0.14f * scale)
+                )
+                for (px in floatArrayOf(0.08f, 0.46f, 0.88f)) {
+                    drawRect(
+                        color = Color(0xFF475569),
+                        topLeft = Offset(rearX + trailerW * px, upperDeckY),
+                        size = Size(0.16f * scale, 1.35f * scale)
+                    )
+                }
+                // Draw 2 cars on upper deck + 1 car on lower deck
+                val carSpecs = listOf(
+                    Triple(rearX + 1.8f * scale, upperDeckY - 0.02f * scale, Color(0xFFEF4444)),
+                    Triple(rearX + 6.8f * scale, upperDeckY - 0.02f * scale, Color(0xFF38BDF8)),
+                    Triple(rearX + 4.4f * scale, deckY - 0.22f * scale, Color(0xFFFACC15))
+                )
+                for ((cx, cy, col) in carSpecs) {
+                    val cw = 3.5f * scale
+                    val ch = 1.05f * scale
                     drawRoundRect(
-                        brush = Brush.verticalGradient(listOf(Color(0xFFFDE047), Color(0xFFEAB308), Color(0xFFA16207))),
-                        topLeft = Offset(exX - 1.35f * scale, exBaseY - 1.42f * scale),
-                        size = Size(2.45f * scale, 0.90f * scale),
-                        cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
+                        brush = Brush.verticalGradient(listOf(lighten(col, 0.25f), col, darken(col, 0.55f))),
+                        topLeft = Offset(cx - cw * 0.5f, cy - ch * 0.72f),
+                        size = Size(cw, ch * 0.52f),
+                        cornerRadius = CornerRadius(0.12f * scale, 0.12f * scale)
                     )
                     drawRoundRect(
                         color = Color(0xFF1E293B),
-                        topLeft = Offset(exX + 0.05f * scale, exBaseY - 2.15f * scale),
-                        size = Size(0.95f * scale, 0.85f * scale),
+                        topLeft = Offset(cx - cw * 0.28f, cy - ch),
+                        size = Size(cw * 0.54f, ch * 0.34f),
                         cornerRadius = CornerRadius(0.10f * scale, 0.10f * scale)
                     )
-                    drawRoundRect(
-                        color = Color(0xFF38BDF8).copy(alpha = 0.38f),
-                        topLeft = Offset(exX + 0.16f * scale, exBaseY - 2.02f * scale),
-                        size = Size(0.72f * scale, 0.55f * scale),
-                        cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
-                    )
-                    // Hydraulic boom + steel hydraulic piston cylinder
-                    drawLine(
-                        color = Color(0xFFEAB308),
-                        start = Offset(exX + 0.95f * scale, exBaseY - 1.05f * scale),
-                        end = Offset(exX + 2.45f * scale, exBaseY - 2.05f * scale),
-                        strokeWidth = 0.34f * scale,
-                        cap = StrokeCap.Round
-                    )
-                    drawLine(
-                        color = Color(0xFFCBD5E1),
-                        start = Offset(exX + 1.10f * scale, exBaseY - 1.35f * scale),
-                        end = Offset(exX + 1.95f * scale, exBaseY - 1.85f * scale),
-                        strokeWidth = 0.08f * scale
-                    )
-                    drawLine(
-                        color = Color(0xFFEAB308),
-                        start = Offset(exX + 2.45f * scale, exBaseY - 2.05f * scale),
-                        end = Offset(exX + 3.45f * scale, exBaseY - 0.72f * scale),
-                        strokeWidth = 0.28f * scale,
-                        cap = StrokeCap.Round
-                    )
-                    drawArc(
-                        color = Color(0xFF334155),
-                        startAngle = 10f,
-                        sweepAngle = 155f,
-                        useCenter = true,
-                        topLeft = Offset(exX + 3.05f * scale, exBaseY - 0.95f * scale),
-                        size = Size(0.78f * scale, 0.72f * scale)
-                    )
-                    // Tie-down orange cargo chains
-                    drawLine(Color(0xFFF97316), Offset(exX - 1.8f * scale, exBaseY), Offset(exX - 1.2f * scale, exBaseY - 0.45f * scale), strokeWidth = 0.05f * scale)
-                    drawLine(Color(0xFFF97316), Offset(exX + 1.8f * scale, exBaseY), Offset(exX + 1.2f * scale, exBaseY - 0.45f * scale), strokeWidth = 0.05f * scale)
-                } else {
-                    val bladePath = Path().apply {
-                        moveTo(rearX + 0.45f * scale, deckY - 0.30f * scale)
-                        lineTo(rearX + 0.95f * scale, deckY - 1.55f * scale)
-                        lineTo(frontX - 0.55f * scale, deckY - 1.25f * scale)
-                        lineTo(frontX - 0.35f * scale, deckY - 0.35f * scale)
-                        close()
-                    }
-                    drawPath(
-                        path = bladePath,
-                        brush = Brush.verticalGradient(listOf(Color(0xFFFFFFFF), Color(0xFFCBD5E1)))
-                    )
-                    for (cx in floatArrayOf(0.22f, 0.72f)) {
-                        drawRect(
-                            color = Color(0xFFF59E0B),
-                            topLeft = Offset(rearX + trailerW * cx, deckY - 0.95f * scale),
-                            size = Size(0.32f * scale, 0.75f * scale)
-                        )
-                    }
+                    drawCircle(Color(0xFF0F172A), radius = 0.26f * scale, center = Offset(cx - cw * 0.30f, cy - 0.24f * scale))
+                    drawCircle(Color(0xFF0F172A), radius = 0.26f * scale, center = Offset(cx + cw * 0.30f, cy - 0.24f * scale))
                 }
             }
-            else -> {
+            CargoTrailerType.FLATBED_EXCAVATOR -> {
+                drawRoundRect(
+                    color = Color(0xFF28303B),
+                    topLeft = Offset(rearX, deckY - 0.24f * scale),
+                    size = Size(trailerW, 0.26f * scale),
+                    cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
+                )
+                val exX = rearX + trailerW * 0.42f
+                val exBaseY = deckY - 0.24f * scale
+                drawRoundRect(
+                    color = Color(0xFF15191F),
+                    topLeft = Offset(exX - 1.55f * scale, exBaseY - 0.52f * scale),
+                    size = Size(3.10f * scale, 0.52f * scale),
+                    cornerRadius = CornerRadius(0.24f * scale, 0.24f * scale)
+                )
+                for (tr in -3..3) {
+                    drawCircle(Color(0xFF475569), radius = 0.12f * scale, center = Offset(exX + tr * 0.36f * scale, exBaseY - 0.26f * scale))
+                }
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFFDE047), Color(0xFFEAB308), Color(0xFFA16207))),
+                    topLeft = Offset(exX - 1.35f * scale, exBaseY - 1.42f * scale),
+                    size = Size(2.45f * scale, 0.90f * scale),
+                    cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
+                )
+                drawRoundRect(
+                    color = Color(0xFF1E293B),
+                    topLeft = Offset(exX + 0.05f * scale, exBaseY - 2.15f * scale),
+                    size = Size(0.95f * scale, 0.85f * scale),
+                    cornerRadius = CornerRadius(0.10f * scale, 0.10f * scale)
+                )
+                drawRoundRect(
+                    color = Color(0xFF38BDF8).copy(alpha = 0.38f),
+                    topLeft = Offset(exX + 0.16f * scale, exBaseY - 2.02f * scale),
+                    size = Size(0.72f * scale, 0.55f * scale),
+                    cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
+                )
+                drawLine(Color(0xFFEAB308), Offset(exX + 0.95f * scale, exBaseY - 1.05f * scale), Offset(exX + 2.45f * scale, exBaseY - 2.05f * scale), strokeWidth = 0.34f * scale, cap = StrokeCap.Round)
+                drawLine(Color(0xFFCBD5E1), Offset(exX + 1.10f * scale, exBaseY - 1.35f * scale), Offset(exX + 1.95f * scale, exBaseY - 1.85f * scale), strokeWidth = 0.08f * scale)
+                drawLine(Color(0xFFEAB308), Offset(exX + 2.45f * scale, exBaseY - 2.05f * scale), Offset(exX + 3.45f * scale, exBaseY - 0.72f * scale), strokeWidth = 0.28f * scale, cap = StrokeCap.Round)
+                drawArc(Color(0xFF334155), startAngle = 10f, sweepAngle = 155f, useCenter = true, topLeft = Offset(exX + 3.05f * scale, exBaseY - 0.95f * scale), size = Size(0.78f * scale, 0.72f * scale))
+            }
+            CargoTrailerType.WIND_TURBINE -> {
+                drawRoundRect(
+                    color = Color(0xFF28303B),
+                    topLeft = Offset(rearX, deckY - 0.24f * scale),
+                    size = Size(trailerW, 0.26f * scale),
+                    cornerRadius = CornerRadius(0.04f * scale, 0.04f * scale)
+                )
+                val bladePath = Path().apply {
+                    moveTo(rearX + 0.45f * scale, deckY - 0.30f * scale)
+                    lineTo(rearX + 0.95f * scale, deckY - 1.55f * scale)
+                    lineTo(frontX - 0.55f * scale, deckY - 1.25f * scale)
+                    lineTo(frontX - 0.35f * scale, deckY - 0.35f * scale)
+                    close()
+                }
+                drawPath(bladePath, Brush.verticalGradient(listOf(Color(0xFFFFFFFF), Color(0xFFCBD5E1))))
+                for (cx in floatArrayOf(0.22f, 0.72f)) {
+                    drawRect(
+                        color = Color(0xFFF59E0B),
+                        topLeft = Offset(rearX + trailerW * cx, deckY - 0.95f * scale),
+                        size = Size(0.32f * scale, 0.75f * scale)
+                    )
+                }
+            }
+            CargoTrailerType.AGRI_GRAIN -> {
+                val topY = groundY - 3.22f * scale
+                val boxH = deckY - topY
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFE5D299), Color(0xFFD4A74A), Color(0xFF9C7125))),
+                    topLeft = Offset(rearX + 0.1f * scale, topY),
+                    size = Size(trailerW - 0.2f * scale, boxH),
+                    cornerRadius = CornerRadius(0.12f * scale, 0.12f * scale)
+                )
+                for (i in 1..8) {
+                    val rx = rearX + (trailerW / 9f) * i
+                    drawRect(Color(0xFF475569), Offset(rx, topY), Size(0.08f * scale, boxH))
+                }
+                drawRect(Color(0xFF15803D), Offset(rearX + 0.4f * scale, topY + boxH * 0.36f), Size(trailerW - 0.8f * scale, 0.28f * scale))
+            }
+            CargoTrailerType.REEFER_BOX -> {
                 val topY = groundY - 3.68f * scale
                 val boxH = deckY - topY
                 drawRoundRect(
@@ -893,7 +1158,6 @@ object Truck2DArtwork {
     }
 
     fun DrawScope.drawSemiWheel2D(cx: Float, cy: Float, radius: Float, angleRad: Float) {
-        // Outer deep rubber tire + tread rim
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(Color(0xFF232830), Color(0xFF14181E), Color(0xFF0B0E12)),
@@ -909,7 +1173,6 @@ object Truck2DArtwork {
             center = Offset(cx, cy),
             style = Stroke(width = radius * 0.09f)
         )
-        // Ventilated steel brake rotor + red brake caliper visible behind alloy rim
         drawCircle(color = Color(0xFF4B5563), radius = radius * 0.48f, center = Offset(cx, cy))
         drawArc(
             color = Color(0xFFDC2626),
@@ -920,7 +1183,6 @@ object Truck2DArtwork {
             size = Size(radius * 0.84f, radius * 0.84f),
             style = Stroke(width = radius * 0.14f, cap = StrokeCap.Round)
         )
-        // Polished 10-lug semi alloy rim
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(Color(0xFFF8FAFC), Color(0xFFCBD5E1), Color(0xFF64748B)),
@@ -949,11 +1211,14 @@ object Truck2DArtwork {
     }
 
     /**
-     * Draws a Top-Down 2D HD Truck Rig + Trailer for CameraMode.TOPDOWN_2D.
+     * Top-Down / Elevated Forward 2D Truck Rig + Trailer for CameraMode.FRONT_2D.
      */
     fun DrawScope.drawTruckRig2DTopDown(
         truck: TruckSpec,
-        routeId: String,
+        visualConfig: TruckVisualConfig = TruckVisualConfig(
+            paintHex = truck.defaultPaintHex,
+            trailerType = truck.defaultTrailerType
+        ),
         cx: Float,
         cy: Float,
         scale: Float,
@@ -963,7 +1228,8 @@ object Truck2DArtwork {
         braking: Boolean,
         nightFactor: Float
     ) {
-        val primary = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
+        val fallbackPrimary = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
+        val primary = parseHexColor(visualConfig.paintHex, fallbackPrimary)
         val primaryDark = darken(primary, 0.58f)
         val accent = Color(truck.accentColorRgb[0], truck.accentColorRgb[1], truck.accentColorRgb[2])
 
@@ -977,10 +1243,13 @@ object Truck2DArtwork {
                 size = Size(tw, tl),
                 cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
             )
-            val roofBrush = when (routeId) {
-                "desert_night" -> Brush.horizontalGradient(listOf(Color(0xFF64748B), Color(0xFFF8FAFC), Color(0xFF475569)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
-                "alpine_pass", "storm_summit" -> Brush.horizontalGradient(listOf(Color(0xFF334155), Color(0xFF475569), Color(0xFF1E293B)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
-                else -> Brush.horizontalGradient(listOf(Color(0xFFCBD5E1), Color(0xFFF8FAFC), Color(0xFF94A3B8)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+            val roofBrush = when (visualConfig.trailerType) {
+                CargoTrailerType.FUEL_TANKER -> Brush.horizontalGradient(listOf(Color(0xFF64748B), Color(0xFFF8FAFC), Color(0xFF475569)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+                CargoTrailerType.FLATBED_EXCAVATOR, CargoTrailerType.WIND_TURBINE -> Brush.horizontalGradient(listOf(Color(0xFF334155), Color(0xFF475569), Color(0xFF1E293B)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+                CargoTrailerType.TIMBER_LOGS -> Brush.horizontalGradient(listOf(Color(0xFF5D3A20), Color(0xFF8B5A2B), Color(0xFF4B2D17)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+                CargoTrailerType.CAR_CARRIER -> Brush.horizontalGradient(listOf(Color(0xFF1E293B), Color(0xFF334155), Color(0xFF1E293B)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+                CargoTrailerType.AGRI_GRAIN -> Brush.horizontalGradient(listOf(Color(0xFF9C7125), Color(0xFFE5D299), Color(0xFF9C7125)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
+                CargoTrailerType.REEFER_BOX -> Brush.horizontalGradient(listOf(Color(0xFFCBD5E1), Color(0xFFF8FAFC), Color(0xFF94A3B8)), startX = cx - tw * 0.5f, endX = cx + tw * 0.5f)
             }
             drawRoundRect(
                 brush = roofBrush,
@@ -988,19 +1257,22 @@ object Truck2DArtwork {
                 size = Size(tw, tl),
                 cornerRadius = CornerRadius(0.12f * scale, 0.12f * scale)
             )
-            if (routeId == "alpine_pass") {
+            if (visualConfig.trailerType == CargoTrailerType.CAR_CARRIER) {
+                val cols = listOf(Color(0xFFEF4444), Color(0xFF38BDF8), Color(0xFFFACC15))
+                cols.forEachIndexed { idx, col ->
+                    drawRoundRect(
+                        color = col,
+                        topLeft = Offset(cx - tw * 0.36f, tTop + (0.6f + idx * 3.2f) * scale),
+                        size = Size(tw * 0.72f, 2.6f * scale),
+                        cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
+                    )
+                }
+            } else if (visualConfig.trailerType == CargoTrailerType.FLATBED_EXCAVATOR) {
                 drawRoundRect(
                     color = Color(0xFFFACC15),
                     topLeft = Offset(cx - tw * 0.35f, tTop + 2.8f * scale),
                     size = Size(tw * 0.70f, 3.6f * scale),
                     cornerRadius = CornerRadius(0.15f * scale, 0.15f * scale)
-                )
-            } else if (routeId == "storm_summit") {
-                drawRoundRect(
-                    color = Color(0xFFF8FAFC),
-                    topLeft = Offset(cx - tw * 0.22f, tTop + 0.8f * scale),
-                    size = Size(tw * 0.44f, 8.8f * scale),
-                    cornerRadius = CornerRadius(0.3f * scale, 0.3f * scale)
                 )
             }
             if (braking || nightFactor > 0.35f) {
@@ -1077,99 +1349,162 @@ object Truck2DArtwork {
     }
 
     /**
-     * Draws detailed 2D Traffic Cars, Vans & Rival Semi-Trucks in Side Profile.
+     * Draws 2D Side-Profile Traffic: Cars, Coaches/Buses, Motorcycles & Trucks.
      */
     fun DrawScope.drawTrafficVehicle2DSide(
-        isTruck: Boolean,
+        vehicleType: TrafficVehicleType,
         isOncoming: Boolean,
         bodyColor: Color,
         centerX: Float,
         groundY: Float,
         scale: Float,
         wheelAngleRad: Float,
-        nightFactor: Float
+        nightFactor: Float,
+        braking: Boolean = false
     ) {
         val dir = if (isOncoming) -1f else 1f
         val bodyDark = darken(bodyColor, 0.52f)
         val bodyLight = lighten(bodyColor, 0.28f)
 
-        val len = if (isTruck) 7.4f * scale else 4.35f * scale
-        val h = if (isTruck) 3.15f * scale else 1.48f * scale
+        val len = when (vehicleType) {
+            TrafficVehicleType.TRUCK -> 7.4f * scale
+            TrafficVehicleType.BUS -> 8.6f * scale
+            TrafficVehicleType.SEDAN -> 4.35f * scale
+            TrafficVehicleType.MOTORCYCLE -> 2.15f * scale
+        }
+        val h = when (vehicleType) {
+            TrafficVehicleType.TRUCK -> 3.15f * scale
+            TrafficVehicleType.BUS -> 3.05f * scale
+            TrafficVehicleType.SEDAN -> 1.48f * scale
+            TrafficVehicleType.MOTORCYCLE -> 1.28f * scale
+        }
         val leftX = centerX - len * 0.5f
         val rightX = centerX + len * 0.5f
 
         drawOval(
             color = Color(0x8805070A),
             topLeft = Offset(leftX - 0.15f * scale, groundY - 0.10f * scale),
-            size = Size(len + 0.30f * scale, 0.32f * scale)
+            size = Size(len + 0.30f * scale, 0.30f * scale)
         )
 
-        if (isTruck) {
-            val boxStartX = if (isOncoming) centerX - 1.2f * scale else leftX
-            val boxW = len * 0.68f
-            drawRoundRect(
-                brush = Brush.verticalGradient(listOf(Color(0xFFF8FAFC), Color(0xFFCBD5E1))),
-                topLeft = Offset(boxStartX, groundY - h),
-                size = Size(boxW, h - 0.55f * scale),
-                cornerRadius = CornerRadius(0.08f * scale, 0.08f * scale)
-            )
-            val cabStartX = if (isOncoming) leftX else leftX + boxW + 0.12f * scale
-            val cabW = len * 0.29f
-            drawRoundRect(
-                brush = Brush.verticalGradient(listOf(bodyLight, bodyColor, bodyDark)),
-                topLeft = Offset(cabStartX, groundY - h * 0.85f),
-                size = Size(cabW, h * 0.85f - 0.45f * scale),
-                cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
-            )
-            val winX = if (isOncoming) cabStartX + 0.12f * scale else cabStartX + cabW - 0.72f * scale
-            drawRoundRect(
-                color = Color(0xFF1E293B),
-                topLeft = Offset(winX, groundY - h * 0.76f),
-                size = Size(0.60f * scale, 0.68f * scale),
-                cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
-            )
-        } else {
-            val bodyPath = Path().apply {
-                moveTo(leftX, groundY - 0.36f * scale)
-                lineTo(leftX + 0.10f * scale, groundY - 0.92f * scale)
-                lineTo(centerX - 0.95f * scale * dir, groundY - 0.98f * scale)
-                lineTo(centerX - 0.45f * scale * dir, groundY - h)
-                lineTo(centerX + 0.55f * scale * dir, groundY - h)
-                lineTo(centerX + 1.15f * scale * dir, groundY - 0.96f * scale)
-                lineTo(rightX - 0.08f * scale, groundY - 0.85f * scale)
-                lineTo(rightX, groundY - 0.36f * scale)
-                close()
-            }
-            drawPath(
-                path = bodyPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(bodyLight, bodyColor, bodyDark),
-                    startY = groundY - h,
-                    endY = groundY - 0.35f * scale
+        when (vehicleType) {
+            TrafficVehicleType.TRUCK -> {
+                val boxStartX = if (isOncoming) centerX - 1.2f * scale else leftX
+                val boxW = len * 0.68f
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFF8FAFC), Color(0xFFCBD5E1))),
+                    topLeft = Offset(boxStartX, groundY - h),
+                    size = Size(boxW, h - 0.55f * scale),
+                    cornerRadius = CornerRadius(0.08f * scale, 0.08f * scale)
                 )
-            )
-            drawRoundRect(
-                color = Color(0xFF1A2838),
-                topLeft = Offset(centerX - 0.85f * scale, groundY - h + 0.12f * scale),
-                size = Size(1.75f * scale, 0.44f * scale),
-                cornerRadius = CornerRadius(0.10f * scale, 0.10f * scale)
-            )
+                val cabStartX = if (isOncoming) leftX else leftX + boxW + 0.12f * scale
+                val cabW = len * 0.29f
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(bodyLight, bodyColor, bodyDark)),
+                    topLeft = Offset(cabStartX, groundY - h * 0.85f),
+                    size = Size(cabW, h * 0.85f - 0.45f * scale),
+                    cornerRadius = CornerRadius(0.14f * scale, 0.14f * scale)
+                )
+                val winX = if (isOncoming) cabStartX + 0.12f * scale else cabStartX + cabW - 0.72f * scale
+                drawRoundRect(
+                    color = Color(0xFF1E293B),
+                    topLeft = Offset(winX, groundY - h * 0.76f),
+                    size = Size(0.60f * scale, 0.68f * scale),
+                    cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
+                )
+            }
+            TrafficVehicleType.BUS -> {
+                // Sleek BUSSID-inspired tourist coach bus with panoramic windows & accent stripe
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(bodyLight, bodyColor, bodyDark)),
+                    topLeft = Offset(leftX, groundY - h),
+                    size = Size(len, h - 0.42f * scale),
+                    cornerRadius = CornerRadius(0.24f * scale, 0.24f * scale)
+                )
+                drawRect(
+                    color = Color(0xFFFACC15),
+                    topLeft = Offset(leftX + 0.10f * scale, groundY - h * 0.44f),
+                    size = Size(len - 0.20f * scale, 0.14f * scale)
+                )
+                // Panoramic passenger windows
+                val winCount = 5
+                val winW = (len * 0.78f) / winCount - 0.14f * scale
+                for (wi in 0 until winCount) {
+                    val wx = leftX + 0.42f * scale + wi * (winW + 0.14f * scale)
+                    drawRoundRect(
+                        color = Color(0xFF162536),
+                        topLeft = Offset(wx, groundY - h + 0.26f * scale),
+                        size = Size(winW, h * 0.36f),
+                        cornerRadius = CornerRadius(0.06f * scale, 0.06f * scale)
+                    )
+                }
+            }
+            TrafficVehicleType.MOTORCYCLE -> {
+                // Motorcycle frame + fuel tank + helmeted rider
+                drawLine(
+                    color = bodyColor,
+                    start = Offset(leftX + 0.4f * scale, groundY - 0.45f * scale),
+                    end = Offset(rightX - 0.35f * scale, groundY - 0.72f * scale),
+                    strokeWidth = 0.20f * scale,
+                    cap = StrokeCap.Round
+                )
+                // Rider torso + helmet
+                drawLine(
+                    color = Color(0xFF1E293B),
+                    start = Offset(centerX - 0.12f * scale * dir, groundY - 0.65f * scale),
+                    end = Offset(centerX + 0.14f * scale * dir, groundY - 1.12f * scale),
+                    strokeWidth = 0.24f * scale,
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = Color(0xFFF8FAFC),
+                    radius = 0.20f * scale,
+                    center = Offset(centerX + 0.16f * scale * dir, groundY - 1.24f * scale)
+                )
+            }
+            TrafficVehicleType.SEDAN -> {
+                val bodyPath = Path().apply {
+                    moveTo(leftX, groundY - 0.36f * scale)
+                    lineTo(leftX + 0.10f * scale, groundY - 0.92f * scale)
+                    lineTo(centerX - 0.95f * scale * dir, groundY - 0.98f * scale)
+                    lineTo(centerX - 0.45f * scale * dir, groundY - h)
+                    lineTo(centerX + 0.55f * scale * dir, groundY - h)
+                    lineTo(centerX + 1.15f * scale * dir, groundY - 0.96f * scale)
+                    lineTo(rightX - 0.08f * scale, groundY - 0.85f * scale)
+                    lineTo(rightX, groundY - 0.36f * scale)
+                    close()
+                }
+                drawPath(
+                    path = bodyPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(bodyLight, bodyColor, bodyDark),
+                        startY = groundY - h,
+                        endY = groundY - 0.35f * scale
+                    )
+                )
+                drawRoundRect(
+                    color = Color(0xFF1A2838),
+                    topLeft = Offset(centerX - 0.85f * scale, groundY - h + 0.12f * scale),
+                    size = Size(1.75f * scale, 0.44f * scale),
+                    cornerRadius = CornerRadius(0.10f * scale, 0.10f * scale)
+                )
+            }
         }
 
-        val wr = if (isTruck) 0.44f * scale else 0.34f * scale
+        val wr = when (vehicleType) {
+            TrafficVehicleType.TRUCK, TrafficVehicleType.BUS -> 0.44f * scale
+            TrafficVehicleType.MOTORCYCLE -> 0.28f * scale
+            TrafficVehicleType.SEDAN -> 0.34f * scale
+        }
         drawSemiWheel2D(leftX + len * 0.22f, groundY - wr, wr, wheelAngleRad * dir)
         drawSemiWheel2D(leftX + len * 0.78f, groundY - wr, wr, wheelAngleRad * dir)
 
         val frontX = if (isOncoming) leftX else rightX
         val rearX = if (isOncoming) rightX else leftX
+        drawCircle(color = Color(0xFFFFF8D6), radius = 0.11f * scale, center = Offset(frontX, groundY - 0.66f * scale))
         drawCircle(
-            color = Color(0xFFFFF8D6),
-            radius = 0.11f * scale,
-            center = Offset(frontX, groundY - 0.66f * scale)
-        )
-        drawCircle(
-            color = Color(0xFFFF3030),
-            radius = 0.10f * scale,
+            color = if (braking) Color(0xFFFF1818) else Color(0xFFAA1E1E),
+            radius = if (braking) 0.14f * scale else 0.10f * scale,
             center = Offset(rearX, groundY - 0.68f * scale)
         )
         if (nightFactor > 0.22f || isOncoming) {
@@ -1197,70 +1532,104 @@ object Truck2DArtwork {
         }
     }
 
-    /**
-     * Detailed Rear/Front 2D vehicle view for Cabina 2D horizon perspective.
-     */
     fun DrawScope.drawTrafficVehicle2DRearFront(
-        isTruck: Boolean,
+        vehicleType: TrafficVehicleType,
         isOncoming: Boolean,
         bodyColor: Color,
         cx: Float,
         bottomY: Float,
         width: Float,
-        nightFactor: Float
+        nightFactor: Float,
+        braking: Boolean = false
     ) {
-        val h = width * (if (isTruck) 1.18f else 0.72f)
-        val left = cx - width * 0.5f
+        val h = width * when (vehicleType) {
+            TrafficVehicleType.TRUCK -> 1.18f
+            TrafficVehicleType.BUS -> 1.24f
+            TrafficVehicleType.MOTORCYCLE -> 1.45f
+            TrafficVehicleType.SEDAN -> 0.72f
+        }
+        val actualW = if (vehicleType == TrafficVehicleType.MOTORCYCLE) width * 0.42f else width
+        val left = cx - actualW * 0.5f
         val bodyDark = darken(bodyColor, 0.55f)
 
-        // Ground shadow
         drawOval(
             color = Color(0x88040608),
-            topLeft = Offset(left - width * 0.08f, bottomY - h * 0.06f),
-            size = Size(width * 1.16f, h * 0.16f)
+            topLeft = Offset(left - actualW * 0.08f, bottomY - h * 0.06f),
+            size = Size(actualW * 1.16f, h * 0.16f)
         )
-        // Rear/Front tires
-        val tireW = width * 0.16f
-        val tireH = h * 0.20f
-        drawRoundRect(Color(0xFF0F1318), Offset(left + width * 0.06f, bottomY - tireH), Size(tireW, tireH), CornerRadius(3f, 3f))
-        drawRoundRect(Color(0xFF0F1318), Offset(left + width * 0.78f, bottomY - tireH), Size(tireW, tireH), CornerRadius(3f, 3f))
+        if (vehicleType == TrafficVehicleType.MOTORCYCLE) {
+            drawRoundRect(Color(0xFF0F1318), Offset(cx - actualW * 0.25f, bottomY - h * 0.35f), Size(actualW * 0.50f, h * 0.35f), CornerRadius(3f, 3f))
+            drawRoundRect(bodyColor, Offset(left, bottomY - h * 0.75f), Size(actualW, h * 0.48f), CornerRadius(4f, 4f))
+            drawCircle(Color(0xFFF8FAFC), radius = actualW * 0.34f, center = Offset(cx, bottomY - h * 0.88f))
+            val lightCol = if (isOncoming) Color(0xFFFFF8D6) else Color(0xFFFF2C2C)
+            drawCircle(lightCol, radius = (actualW * 0.18f).coerceAtLeast(2f), center = Offset(cx, bottomY - h * 0.42f))
+            return
+        }
 
-        // Main body/box
+        val tireW = actualW * 0.16f
+        val tireH = h * 0.20f
+        drawRoundRect(Color(0xFF0F1318), Offset(left + actualW * 0.06f, bottomY - tireH), Size(tireW, tireH), CornerRadius(3f, 3f))
+        drawRoundRect(Color(0xFF0F1318), Offset(left + actualW * 0.78f, bottomY - tireH), Size(tireW, tireH), CornerRadius(3f, 3f))
+
         drawRoundRect(
-            brush = Brush.verticalGradient(listOf(if (isTruck && !isOncoming) Color(0xFFE2E8F0) else bodyColor, bodyDark)),
+            brush = Brush.verticalGradient(listOf(if (vehicleType == TrafficVehicleType.TRUCK && !isOncoming) Color(0xFFE2E8F0) else bodyColor, bodyDark)),
             topLeft = Offset(left, bottomY - h),
-            size = Size(width, h - tireH * 0.45f),
-            cornerRadius = CornerRadius(width * 0.08f, width * 0.08f)
+            size = Size(actualW, h - tireH * 0.45f),
+            cornerRadius = CornerRadius(actualW * 0.08f, actualW * 0.08f)
         )
-        // Rear window / windshield
         drawRoundRect(
             color = Color(0xFF142230),
-            topLeft = Offset(left + width * 0.14f, bottomY - h * 0.88f),
-            size = Size(width * 0.72f, h * 0.28f),
-            cornerRadius = CornerRadius(width * 0.05f, width * 0.05f)
+            topLeft = Offset(left + actualW * 0.14f, bottomY - h * 0.88f),
+            size = Size(actualW * 0.72f, h * 0.28f),
+            cornerRadius = CornerRadius(actualW * 0.05f, actualW * 0.05f)
         )
-        // Twin lights + glow
-        val lightCol = if (isOncoming) Color(0xFFFFF8D6) else Color(0xFFFF2C2C)
+        val lightCol = when {
+            isOncoming -> Color(0xFFFFF8D6)
+            braking -> Color(0xFFFF1414)
+            else -> Color(0xFFD92626)
+        }
         val ly = bottomY - h * 0.34f
-        drawCircle(lightCol, radius = (width * 0.075f).coerceAtLeast(2.2f), center = Offset(left + width * 0.16f, ly))
-        drawCircle(lightCol, radius = (width * 0.075f).coerceAtLeast(2.2f), center = Offset(left + width * 0.84f, ly))
-        if (nightFactor > 0.25f || isOncoming) {
+        drawCircle(lightCol, radius = (actualW * 0.08f).coerceAtLeast(2.2f), center = Offset(left + actualW * 0.16f, ly))
+        drawCircle(lightCol, radius = (actualW * 0.08f).coerceAtLeast(2.2f), center = Offset(left + actualW * 0.84f, ly))
+        if (nightFactor > 0.25f || isOncoming || braking) {
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(lightCol.copy(alpha = 0.42f), Color.Transparent),
                     center = Offset(cx, ly),
-                    radius = width * 0.75f
+                    radius = actualW * 0.75f
                 ),
-                radius = width * 0.75f,
+                radius = actualW * 0.75f,
                 center = Offset(cx, ly),
                 blendMode = BlendMode.Screen
             )
         }
     }
 
-    /**
-     * Articulated 2D Trucker Driver ("Hombre") in High-Vis Vest, Cap & Boots.
-     */
+    fun DrawScope.drawConvoyTag2D(
+        driverName: String,
+        speedKmh: Int,
+        hornActive: Boolean,
+        cx: Float,
+        topY: Float
+    ) {
+        val label = if (hornActive) "📣 $driverName ($speedKmh km/h)" else "$driverName • $speedKmh km/h"
+        convoyTagTextPaint.textSize = 24f
+        val textW = convoyTagTextPaint.measureText(label)
+        val boxW = textW + 28f
+        val boxH = 38f
+        val left = cx - boxW * 0.5f
+        val top = topY - boxH
+        val rect = android.graphics.RectF(left, top, left + boxW, top + boxH)
+        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 12f, 12f, convoyTagBgPaint)
+        convoyTagBorderPaint.color = if (hornActive) {
+            android.graphics.Color.rgb(245, 158, 11)
+        } else {
+            android.graphics.Color.rgb(56, 189, 248)
+        }
+        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 12f, 12f, convoyTagBorderPaint)
+        drawContext.canvas.nativeCanvas.drawText(label, cx, top + 27f, convoyTagTextPaint)
+    }
+
     fun DrawScope.drawDriverOnFoot2DSide(
         centerX: Float,
         groundY: Float,
@@ -1283,86 +1652,27 @@ object Truck2DArtwork {
         val shoulderY = groundY - 1.46f * scale - bob
 
         rotate(degrees = -swing, pivot = Offset(centerX, hipY)) {
-            drawLine(
-                color = Color(0xFF1E3A5F),
-                start = Offset(centerX, hipY),
-                end = Offset(centerX, groundY - 0.14f * scale - bob),
-                strokeWidth = 0.20f * scale,
-                cap = StrokeCap.Round
-            )
-            drawRoundRect(
-                color = Color(0xFF3E2723),
-                topLeft = Offset(centerX - 0.12f * scale, groundY - 0.18f * scale - bob),
-                size = Size(0.34f * scale, 0.16f * scale),
-                cornerRadius = CornerRadius(0.05f * scale, 0.05f * scale)
-            )
+            drawLine(Color(0xFF1E3A5F), Offset(centerX, hipY), Offset(centerX, groundY - 0.14f * scale - bob), strokeWidth = 0.20f * scale, cap = StrokeCap.Round)
+            drawRoundRect(Color(0xFF3E2723), Offset(centerX - 0.12f * scale, groundY - 0.18f * scale - bob), Size(0.34f * scale, 0.16f * scale), CornerRadius(0.05f * scale, 0.05f * scale))
         }
 
         rotate(degrees = swing, pivot = Offset(centerX, hipY)) {
-            drawLine(
-                color = Color(0xFF254B7A),
-                start = Offset(centerX, hipY),
-                end = Offset(centerX, groundY - 0.14f * scale - bob),
-                strokeWidth = 0.22f * scale,
-                cap = StrokeCap.Round
-            )
-            drawRoundRect(
-                color = Color(0xFF4E342E),
-                topLeft = Offset(centerX - 0.12f * scale, groundY - 0.18f * scale - bob),
-                size = Size(0.36f * scale, 0.16f * scale),
-                cornerRadius = CornerRadius(0.05f * scale, 0.05f * scale)
-            )
+            drawLine(Color(0xFF254B7A), Offset(centerX, hipY), Offset(centerX, groundY - 0.14f * scale - bob), strokeWidth = 0.22f * scale, cap = StrokeCap.Round)
+            drawRoundRect(Color(0xFF4E342E), Offset(centerX - 0.12f * scale, groundY - 0.18f * scale - bob), Size(0.36f * scale, 0.16f * scale), CornerRadius(0.05f * scale, 0.05f * scale))
         }
 
-        drawRoundRect(
-            color = Color(0xFF1F2937),
-            topLeft = Offset(centerX - 0.22f * scale, shoulderY),
-            size = Size(0.44f * scale, 0.62f * scale),
-            cornerRadius = CornerRadius(0.10f * scale, 0.10f * scale)
-        )
-        drawRoundRect(
-            color = Color(0xFFF97316),
-            topLeft = Offset(centerX - 0.20f * scale, shoulderY + 0.06f * scale),
-            size = Size(0.40f * scale, 0.48f * scale),
-            cornerRadius = CornerRadius(0.08f * scale, 0.08f * scale)
-        )
-        drawRect(
-            color = Color(0xFFE2E8F0),
-            topLeft = Offset(centerX - 0.20f * scale, shoulderY + 0.34f * scale),
-            size = Size(0.40f * scale, 0.07f * scale)
-        )
+        drawRoundRect(Color(0xFF1F2937), Offset(centerX - 0.22f * scale, shoulderY), Size(0.44f * scale, 0.62f * scale), CornerRadius(0.10f * scale, 0.10f * scale))
+        drawRoundRect(Color(0xFFF97316), Offset(centerX - 0.20f * scale, shoulderY + 0.06f * scale), Size(0.40f * scale, 0.48f * scale), CornerRadius(0.08f * scale, 0.08f * scale))
+        drawRect(Color(0xFFE2E8F0), Offset(centerX - 0.20f * scale, shoulderY + 0.34f * scale), Size(0.40f * scale, 0.07f * scale))
 
         val headCy = shoulderY - 0.20f * scale
-        drawCircle(color = Color(0xFFE0AC84), radius = 0.18f * scale, center = Offset(centerX, headCy))
-        drawArc(
-            color = Color(0xFF1E293B),
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = true,
-            topLeft = Offset(centerX - 0.19f * scale, headCy - 0.21f * scale),
-            size = Size(0.38f * scale, 0.26f * scale)
-        )
-        drawLine(
-            color = Color(0xFFF59E0B),
-            start = Offset(centerX, headCy - 0.08f * scale),
-            end = Offset(centerX + 0.28f * scale * dir, headCy - 0.06f * scale),
-            strokeWidth = 0.06f * scale,
-            cap = StrokeCap.Round
-        )
+        drawCircle(Color(0xFFE0AC84), radius = 0.18f * scale, center = Offset(centerX, headCy))
+        drawArc(Color(0xFF1E293B), startAngle = 180f, sweepAngle = 180f, useCenter = true, topLeft = Offset(centerX - 0.19f * scale, headCy - 0.21f * scale), size = Size(0.38f * scale, 0.26f * scale))
+        drawLine(Color(0xFFF59E0B), Offset(centerX, headCy - 0.08f * scale), Offset(centerX + 0.28f * scale * dir, headCy - 0.06f * scale), strokeWidth = 0.06f * scale, cap = StrokeCap.Round)
 
         rotate(degrees = -swing * 0.85f, pivot = Offset(centerX, shoulderY + 0.08f * scale)) {
-            drawLine(
-                color = Color(0xFF1F2937),
-                start = Offset(centerX, shoulderY + 0.08f * scale),
-                end = Offset(centerX, hipY - 0.04f * scale),
-                strokeWidth = 0.15f * scale,
-                cap = StrokeCap.Round
-            )
-            drawCircle(
-                color = Color(0xFFE0AC84),
-                radius = 0.07f * scale,
-                center = Offset(centerX, hipY - 0.02f * scale)
-            )
+            drawLine(Color(0xFF1F2937), Offset(centerX, shoulderY + 0.08f * scale), Offset(centerX, hipY - 0.04f * scale), strokeWidth = 0.15f * scale, cap = StrokeCap.Round)
+            drawCircle(Color(0xFFE0AC84), radius = 0.07f * scale, center = Offset(centerX, hipY - 0.02f * scale))
         }
     }
 

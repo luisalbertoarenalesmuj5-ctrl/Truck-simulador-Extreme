@@ -151,7 +151,7 @@ fun AuthScreen(
                 Spacer(Modifier.width(14.dp))
                 Column {
                     Text(
-                        text = "SERIE PESADA • 3D",
+                        text = "SERIE PESADA • 2D HD",
                         style = MaterialTheme.typography.labelSmall,
                         color = AmberDiesel
                     )
@@ -178,7 +178,7 @@ fun AuthScreen(
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "Conduce tractocamiones europeos y americanos con física articulada de remolque, iluminación 3D en tiempo real y tres sistemas de dirección de alta precisión.",
+                    text = "Conduce tractocamiones europeos y americanos en 2D HD ultra realista con física articulada de remolque, modo Convoy multijugador, taller y mundo abierto.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

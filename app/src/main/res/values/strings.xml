@@ -6,6 +6,7 @@
     <string name="sign_out">Cerrar sesión</string>
     <string name="tab_routes">Rutas</string>
     <string name="tab_garage">Garaje</string>
+    <string name="tab_convoy">Convoy</string>
     <string name="tab_career">Carrera</string>
     <string name="drive_now">CONDUCIR AHORA</string>
     <string name="pause_title">Simulación en Pausa</string>

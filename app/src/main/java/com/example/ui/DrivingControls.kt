@@ -1,11 +1,14 @@
 package com.example.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +34,8 @@ import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -44,19 +51,37 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import com.example.R
+import com.example.model.ConvoyPlayer
+import com.example.model.RouteSpec
+import com.example.model.TruckSpec
+import com.example.model.TruckVisualConfig
+import com.example.model.WeatherCondition
+import com.example.sim.LandmarkKind
+import com.example.sim.RoadSpline
+import com.example.sim.TrafficVehicle
+import com.example.sim.Truck2DArtwork.drawTruckRig2DSide
+import com.example.sim.WorldLandmark
 import com.example.ui.theme.AmberDiesel
 import com.example.ui.theme.CabMetal
 import com.example.ui.theme.CobaltBeacon
@@ -65,25 +90,6 @@ import com.example.ui.theme.EmeraldCargo
 import com.example.ui.theme.GunmetalBorder
 import com.example.ui.theme.ObsidianNight
 import com.example.ui.theme.SteelSlate
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.offset
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.window.Dialog
-import com.example.R
-import com.example.model.EnvironmentTheme
-import com.example.model.RouteSpec
-import com.example.model.TruckSpec
-import com.example.model.WeatherCondition
-import com.example.sim.LandmarkKind
-import com.example.sim.RoadSpline
-import com.example.sim.Truck2DArtwork.drawTruckRig2DSide
-import com.example.sim.WorldLandmark
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -430,17 +436,21 @@ fun AuxiliaryTruckBar(
     headlightsOn: Boolean,
     leftBlinker: Boolean,
     rightBlinker: Boolean,
+    wiperMode: Int,
+    mirrorsVisible: Boolean,
     onToggleRetarder: () -> Unit,
     onToggleParking: () -> Unit,
     onToggleLights: () -> Unit,
     onToggleLeftBlinker: () -> Unit,
     onToggleRightBlinker: () -> Unit,
+    onCycleWiper: () -> Unit,
+    onToggleMirrors: () -> Unit,
     onHorn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     Row(
-        modifier = modifier,
+        modifier = modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -465,6 +475,26 @@ fun AuxiliaryTruckBar(
             activeColor = CobaltBeacon,
             onClick = onToggleLights,
             testTag = "btn_headlights"
+        )
+        AuxChip(
+            icon = Icons.Filled.WaterDrop,
+            label = when (wiperMode) {
+                1 -> "LIMP I"
+                2 -> "LIMP II"
+                else -> "LIMP"
+            },
+            active = wiperMode > 0,
+            activeColor = Color(0xFF38BDF8),
+            onClick = onCycleWiper,
+            testTag = "btn_wipers"
+        )
+        AuxChip(
+            icon = Icons.Filled.Visibility,
+            label = "ESP",
+            active = mirrorsVisible,
+            activeColor = EmeraldCargo,
+            onClick = onToggleMirrors,
+            testTag = "btn_mirrors"
         )
         AuxChip(
             icon = Icons.Filled.Speed,
@@ -780,6 +810,8 @@ fun RealCockpitOverlay(
     steerNorm: Float,
     upcomingCurvature: Float,
     weather: WeatherCondition,
+    wiperMode: Int,
+    wiperSweepNorm: Float,
     simTimeSec: Float,
     modifier: Modifier = Modifier
 ) {
@@ -845,9 +877,11 @@ fun RealCockpitOverlay(
                 )
             )
 
-            // Windshield wipers sweeping during Rain or Storm
-            if (weather == WeatherCondition.RAIN || weather == WeatherCondition.STORM) {
-                val sweepDeg = -18f + (sin(simTimeSec * 3.4f) * 0.5f + 0.5f) * 68f
+            // Windshield wipers (active manually via LIMP button or during Rain/Storm)
+            val wipersActive = wiperMode > 0 || weather == WeatherCondition.RAIN || weather == WeatherCondition.STORM
+            if (wipersActive || wiperSweepNorm > 0.02f) {
+                val effectiveSweep = if (wiperSweepNorm > 0.02f) wiperSweepNorm else (sin(simTimeSec * 3.4f) * 0.5f + 0.5f)
+                val sweepDeg = -18f + effectiveSweep * 68f
                 val wiperBaseY = (imgTop + imgH * 0.56f).coerceIn(size.height * 0.42f, size.height * 0.72f)
                 val wiperLen = (imgW * 0.28f).coerceAtLeast(160f)
                 for (bx in floatArrayOf(size.width * 0.28f, size.width * 0.64f)) {
@@ -1115,6 +1149,7 @@ fun RoadMapMiniPanel(
     road: RoadSpline,
     progressFraction: Float,
     landmarks: List<WorldLandmark>,
+    remoteConvoyPlayers: List<ConvoyPlayer> = emptyList(),
     onOpenFullMap: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1143,18 +1178,27 @@ fun RoadMapMiniPanel(
                 }
                 drawPath(path, color = Color(0xFF475569), style = Stroke(width = 5f, cap = StrokeCap.Round))
 
-                // Progress highlight
                 val progX = padX + progressFraction.coerceIn(0f, 1f) * (w - padX * 2f)
                 val ptNow = road.sampleAtDistance(progressFraction * route.simLengthMeters)
                 val progY = h * 0.55f + (ptNow.curvature * 1400f).coerceIn(-h * 0.28f, h * 0.28f)
 
-                // Fuel markers on mini map
                 for (lm in landmarks) {
-                    if (lm.kind == LandmarkKind.FUEL_STATION) {
+                    val pinColor = when (lm.kind) {
+                        LandmarkKind.FUEL_STATION -> AmberDiesel
+                        LandmarkKind.WORKSHOP -> Color(0xFF06B6D4)
+                        LandmarkKind.TOLL_BOOTH -> Color(0xFFA855F7)
+                        else -> null
+                    }
+                    if (pinColor != null) {
                         val lt = (lm.s / route.simLengthMeters).coerceIn(0f, 1f)
                         val fx = padX + lt * (w - padX * 2f)
-                        drawCircle(color = AmberDiesel, radius = 3.5f, center = Offset(fx, h * 0.55f))
+                        drawCircle(color = pinColor, radius = 3.2f, center = Offset(fx, h * 0.55f))
                     }
+                }
+                for (cp in remoteConvoyPlayers) {
+                    val ct = (cp.roadS.toFloat() / route.simLengthMeters).coerceIn(0f, 1f)
+                    val cx = padX + ct * (w - padX * 2f)
+                    drawCircle(color = Color(0xFF38BDF8), radius = 4f, center = Offset(cx, h * 0.55f))
                 }
                 drawCircle(color = EmeraldCargo, radius = 5.5f, center = Offset(progX, progY))
                 drawCircle(color = Color.White, radius = 2.5f, center = Offset(progX, progY))
@@ -1176,6 +1220,7 @@ fun RoadMapDialog(
     progressFraction: Float,
     landmarks: List<WorldLandmark>,
     fuelPercent: Int,
+    remoteConvoyPlayers: List<ConvoyPlayer> = emptyList(),
     onDismiss: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -1195,9 +1240,9 @@ fun RoadMapDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "MAPA DE CARRETERAS 2D",
+                            text = if (route.isFreeRoam) "MAPA MUNDO ABIERTO 2D" else "MAPA DE CARRETERAS 2D",
                             style = MaterialTheme.typography.labelSmall,
                             color = CobaltBeacon
                         )
@@ -1222,11 +1267,10 @@ fun RoadMapDialog(
                     }
                 }
 
-                // Detailed curved route radar map
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(175.dp)
+                        .height(185.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(ObsidianNight)
                         .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
@@ -1248,7 +1292,6 @@ fun RoadMapDialog(
                         drawPath(routePath, color = Color(0xFF334155), style = Stroke(width = 14f, cap = StrokeCap.Round))
                         drawPath(routePath, color = Color(0xFF64748B), style = Stroke(width = 4f, cap = StrokeCap.Round))
 
-                        // Landmark pins
                         for (lm in landmarks) {
                             val lt = (lm.s / route.simLengthMeters).coerceIn(0f, 1f)
                             val pt = road.sampleAtDistance(lm.s)
@@ -1256,14 +1299,25 @@ fun RoadMapDialog(
                             val ly = h * 0.52f + (pt.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
                             val pinCol = when (lm.kind) {
                                 LandmarkKind.FUEL_STATION -> AmberDiesel
+                                LandmarkKind.WORKSHOP -> Color(0xFF06B6D4)
+                                LandmarkKind.TOLL_BOOTH -> Color(0xFFA855F7)
+                                LandmarkKind.PARKING_REST -> Color(0xFF38BDF8)
                                 LandmarkKind.CITY_ORIGIN, LandmarkKind.CITY_DESTINATION -> EmeraldCargo
-                                LandmarkKind.CITY_MIDTOWN -> CobaltBeacon
+                                LandmarkKind.VOLCANO, LandmarkKind.TUNNEL, LandmarkKind.BRIDGE -> Color(0xFFF97316)
                                 else -> Color(0xFF94A3B8)
                             }
-                            drawCircle(color = pinCol, radius = 7f, center = Offset(lx, ly))
+                            drawCircle(color = pinCol, radius = 6.5f, center = Offset(lx, ly))
                         }
 
-                        // Current Truck Position
+                        for (cp in remoteConvoyPlayers) {
+                            val ct = (cp.roadS.toFloat() / route.simLengthMeters).coerceIn(0f, 1f)
+                            val pt = road.sampleAtDistance(cp.roadS.toFloat())
+                            val cx = pad + ct * (w - pad * 2f)
+                            val cy = h * 0.52f + (pt.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
+                            drawCircle(color = Color(0xFF38BDF8), radius = 9f, center = Offset(cx, cy))
+                            drawCircle(color = Color.White, radius = 4f, center = Offset(cx, cy))
+                        }
+
                         val ptNow = road.sampleAtDistance(progressFraction * route.simLengthMeters)
                         val tx = pad + progressFraction.coerceIn(0f, 1f) * (w - pad * 2f)
                         val ty = h * 0.52f + (ptNow.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
@@ -1273,7 +1327,7 @@ fun RoadMapDialog(
                 }
 
                 Text(
-                    text = "• Punto Blanco/Azul: Tu Camión  • Ámbar: Gasolineras Diésel  • Verde: Origen/Destino",
+                    text = "• Azul/Blanco: Tú  • Cian: Taller / Convoy  • Ámbar: Diésel  • Púrpura: Peaje  • Verde: Ciudades",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF9FB0C3)
                 )
@@ -1291,14 +1345,114 @@ fun RoadMapDialog(
 }
 
 @Composable
+fun RearviewMirror2D(
+    roadProgressMeters: Float,
+    playerLaneOffset: Float,
+    traffic: List<TrafficVehicle>,
+    remoteConvoyPlayers: List<ConvoyPlayer>,
+    nightFactor: Float,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xEE0D131B),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .size(width = 166.dp, height = 62.dp)
+            .border(2.dp, Color(0xFF64748B), RoundedCornerShape(14.dp))
+            .testTag("rearview_mirror_2d")
+    ) {
+        Box(modifier = Modifier.fillMaxSize().padding(3.dp)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                // Sky reflection in top 40% of convex mirror
+                val skyColor = if (nightFactor > 0.55f) Color(0xFF0A1426) else Color(0xFF4F88BA)
+                drawRoundRect(
+                    color = skyColor,
+                    cornerRadius = CornerRadius(10f, 10f),
+                    size = Size(w, h * 0.42f)
+                )
+                // Asphalt behind player in bottom 58%
+                drawRoundRect(
+                    color = Color(0xFF28303B),
+                    topLeft = Offset(0f, h * 0.40f),
+                    size = Size(w, h * 0.60f),
+                    cornerRadius = CornerRadius(8f, 8f)
+                )
+                // Perspective lane dividers converging at horizon
+                drawLine(
+                    color = Color(0xFFE2E8F0).copy(alpha = 0.5f),
+                    start = Offset(w * 0.48f, h * 0.40f),
+                    end = Offset(w * 0.25f, h),
+                    strokeWidth = 2f
+                )
+                drawLine(
+                    color = Color(0xFFE2E8F0).copy(alpha = 0.5f),
+                    start = Offset(w * 0.52f, h * 0.40f),
+                    end = Offset(w * 0.75f, h),
+                    strokeWidth = 2f
+                )
+                // Trailing AI traffic vehicles (0 to 95m behind player)
+                for (v in traffic) {
+                    val behindDist = roadProgressMeters - v.s
+                    if (behindDist in 3f..95f) {
+                        val depth = 1f - (behindDist / 95f)
+                        val vx = w * 0.5f + ((v.laneOffset - playerLaneOffset) * 0.08f * w)
+                        val vy = h * 0.42f + depth * (h * 0.48f)
+                        val vw = (6f + depth * 18f)
+                        val vh = (4f + depth * 12f)
+                        val bodyColor = Color(v.colorRgb[0], v.colorRgb[1], v.colorRgb[2])
+                        drawRoundRect(
+                            color = bodyColor,
+                            topLeft = Offset(vx - vw * 0.5f, vy - vh * 0.5f),
+                            size = Size(vw, vh),
+                            cornerRadius = CornerRadius(3f, 3f)
+                        )
+                        // Headlights visible in rearview mirror!
+                        drawCircle(Color(0xFFFFF5CC), radius = (1.5f + depth * 2f), center = Offset(vx - vw * 0.3f, vy))
+                        drawCircle(Color(0xFFFFF5CC), radius = (1.5f + depth * 2f), center = Offset(vx + vw * 0.3f, vy))
+                    }
+                }
+                // Trailing Convoy buddies in cyan
+                for (cp in remoteConvoyPlayers) {
+                    val behindDist = roadProgressMeters - cp.roadS.toFloat()
+                    if (behindDist in 3f..140f) {
+                        val depth = 1f - (behindDist / 140f)
+                        val cx = w * 0.5f + ((cp.laneOffset.toFloat() - playerLaneOffset) * 0.08f * w)
+                        val cy = h * 0.42f + depth * (h * 0.48f)
+                        val cw = 8f + depth * 20f
+                        val ch = 5f + depth * 14f
+                        drawRoundRect(
+                            color = Color(0xFF38BDF8),
+                            topLeft = Offset(cx - cw * 0.5f, cy - ch * 0.5f),
+                            size = Size(cw, ch),
+                            cornerRadius = CornerRadius(3f, 3f)
+                        )
+                    }
+                }
+            }
+            Text(
+                text = "RETROVISOR",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF94A3B8),
+                modifier = Modifier.align(Alignment.TopEnd).padding(end = 5.dp, top = 1.dp)
+            )
+        }
+    }
+}
+
+@Composable
 fun Truck2DShowroomPreview(
     truck: TruckSpec,
+    visualConfig: TruckVisualConfig = TruckVisualConfig(
+        paintHex = truck.defaultPaintHex,
+        trailerType = truck.defaultTrailerType
+    ),
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        // Subtle 2D showroom spotlight backdrop
         drawRect(
             brush = Brush.verticalGradient(
                 listOf(Color(0xFF141D29), Color(0xFF0B1018))
@@ -1315,6 +1469,7 @@ fun Truck2DShowroomPreview(
         drawTruckRig2DSide(
             truck = truck,
             routeId = "pacific_coast",
+            visualConfig = visualConfig,
             anchorX = anchorX,
             groundY = groundY,
             scale = scale,

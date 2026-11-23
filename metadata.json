@@ -1,6 +1,6 @@
 {
   "name": "Truck Simulator Extreme",
-  "description": "Simulador realista de conducción de camiones pesados con gráficos 3D, física de remolque, controles de precisión y modo carrera.",
+  "description": "Simulador profesional 2D HD de camiones con mundo abierto, taller de personalización, tráfico inteligente y modo Convoy multijugador.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

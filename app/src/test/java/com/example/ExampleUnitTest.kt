@@ -16,10 +16,11 @@ class ExampleUnitTest {
 
     @Test
     fun `legacy camera mode strings map cleanly to 2D perspectives`() {
-        assertEquals(CameraMode.SIDE_2D, DriverProfile(cameraMode = "CHASE").resolvedCameraMode())
-        assertEquals(CameraMode.TOPDOWN_2D, DriverProfile(cameraMode = "HOOD").resolvedCameraMode())
+        assertEquals(CameraMode.EXTERIOR_2D, DriverProfile(cameraMode = "CHASE").resolvedCameraMode())
+        assertEquals(CameraMode.FRONT_2D, DriverProfile(cameraMode = "HOOD").resolvedCameraMode())
+        assertEquals(CameraMode.FRONT_2D, DriverProfile(cameraMode = "TOPDOWN_2D").resolvedCameraMode())
         assertEquals(CameraMode.CAB_2D, DriverProfile(cameraMode = "CAB").resolvedCameraMode())
-        assertEquals(CameraMode.SIDE_2D, DriverProfile().resolvedCameraMode())
+        assertEquals(CameraMode.EXTERIOR_2D, DriverProfile().resolvedCameraMode())
     }
 
     @Test

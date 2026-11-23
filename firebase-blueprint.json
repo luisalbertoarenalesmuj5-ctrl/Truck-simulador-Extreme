@@ -2,7 +2,7 @@
   "entities": {
     "DriverProfile": {
       "title": "DriverProfile",
-      "description": "Career profile, unlocked trucks, credits, and precision control settings for a truck simulator driver.",
+      "description": "Career profile, fleet ownership, workshop paint/accessories, truck damage state, and control settings for a driver.",
       "type": "object",
       "properties": {
         "userId": {
@@ -31,12 +31,50 @@
         },
         "selectedTruckId": {
           "type": "string",
-          "enum": ["nordic_fh540", "valkyrie_s730", "titan_579", "colossus_w900"],
+          "enum": [
+            "nordic_fh540",
+            "valkyrie_s730",
+            "titan_579",
+            "colossus_w900",
+            "bison_timber",
+            "atlas_tanker",
+            "kodiak_flatbed",
+            "carrier_trans9"
+          ],
           "description": "Currently active tractor rig ID."
         },
         "unlockedTruckIds": {
           "type": "array",
-          "description": "Bounded list of unlocked truck IDs (max 10)."
+          "description": "Bounded list of unlocked truck IDs (max 12)."
+        },
+        "paintColorHex": {
+          "type": "string",
+          "description": "Optional custom hex paint color for the active truck (e.g. #1E64B8)."
+        },
+        "liveryStyle": {
+          "type": "string",
+          "enum": ["CLASSIC", "RACING", "BOLT", "EXECUTIVE"],
+          "description": "Optional custom stripe/livery pattern."
+        },
+        "bullbarInstalled": {
+          "type": "boolean",
+          "description": "Whether chrome front bullbar is installed."
+        },
+        "roofLightbarInstalled": {
+          "type": "boolean",
+          "description": "Whether roof LED lightbar is installed."
+        },
+        "aeroSpoilerInstalled": {
+          "type": "boolean",
+          "description": "Whether cab roof aerodynamic spoiler is installed."
+        },
+        "chromeExhaustInstalled": {
+          "type": "boolean",
+          "description": "Whether upgraded dual chrome exhaust stacks are installed."
+        },
+        "truckDamagePercent": {
+          "type": "integer",
+          "description": "Persisted mechanical damage of the driver's active truck (0-100)."
         },
         "steeringMode": {
           "type": "string",
@@ -49,18 +87,18 @@
         },
         "cameraMode": {
           "type": "string",
-          "enum": ["CHASE", "CAB", "HOOD"],
-          "description": "Preferred simulation camera perspective."
+          "enum": ["EXTERIOR_2D", "CAB_2D", "SIDE_2D", "FRONT_2D", "TOPDOWN_2D", "CHASE", "CAB", "HOOD"],
+          "description": "Preferred 2D simulation camera perspective."
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the driver profile was created (client writes FieldValue.serverTimestamp())."
+          "description": "Server timestamp when the driver profile was created (FieldValue.serverTimestamp())."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the driver profile was last updated (client writes FieldValue.serverTimestamp())."
+          "description": "Server timestamp when the driver profile was last updated (FieldValue.serverTimestamp())."
         }
       },
       "required": [
@@ -102,7 +140,16 @@
         },
         "truckId": {
           "type": "string",
-          "enum": ["nordic_fh540", "valkyrie_s730", "titan_579", "colossus_w900"],
+          "enum": [
+            "nordic_fh540",
+            "valkyrie_s730",
+            "titan_579",
+            "colossus_w900",
+            "bison_timber",
+            "atlas_tanker",
+            "kodiak_flatbed",
+            "carrier_trans9"
+          ],
           "description": "Truck used during this haul."
         },
         "distanceKm": {
@@ -128,7 +175,7 @@
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the delivery was logged (client writes FieldValue.serverTimestamp())."
+          "description": "Server timestamp when the delivery was logged (FieldValue.serverTimestamp())."
         }
       },
       "required": [
@@ -144,16 +191,180 @@
         "perfectDelivery",
         "createdAt"
       ]
+    },
+    "ConvoyRoom": {
+      "title": "ConvoyRoom",
+      "description": "Multiplayer truck convoy session room supporting public lobbies and private invite codes.",
+      "type": "object",
+      "properties": {
+        "roomCode": {
+          "type": "string",
+          "description": "6-character uppercase invite code."
+        },
+        "roomName": {
+          "type": "string",
+          "description": "Convoy display title (2-50 chars)."
+        },
+        "hostId": {
+          "type": "string",
+          "description": "Firebase UID of the convoy host."
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Driver name of the host."
+        },
+        "routeId": {
+          "type": "string",
+          "description": "Route/map ID selected for the convoy."
+        },
+        "privateRoom": {
+          "type": "boolean",
+          "description": "True if room is private and joinable via invite code."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["OPEN", "DRIVING"],
+          "description": "Current convoy session state."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of participating driver UIDs (1..8)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the room was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the room was last updated."
+        }
+      },
+      "required": [
+        "roomCode",
+        "roomName",
+        "hostId",
+        "hostName",
+        "routeId",
+        "privateRoom",
+        "status",
+        "memberUids",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ConvoyPlayer": {
+      "title": "ConvoyPlayer",
+      "description": "Live synchronized position, truck model, paint, and status of a driver inside a convoy room.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase UID of this convoy participant."
+        },
+        "driverName": {
+          "type": "string",
+          "description": "Driver display name (2-40 chars)."
+        },
+        "truckId": {
+          "type": "string",
+          "description": "Truck model ID driven by this player."
+        },
+        "paintColorHex": {
+          "type": "string",
+          "description": "Custom truck hex color."
+        },
+        "roadS": {
+          "type": "number",
+          "description": "Longitudinal road position in simulation meters."
+        },
+        "laneOffset": {
+          "type": "number",
+          "description": "Lateral lane offset in meters."
+        },
+        "speedKmh": {
+          "type": "integer",
+          "description": "Current speed in km/h."
+        },
+        "headlightsOn": {
+          "type": "boolean",
+          "description": "Headlight state."
+        },
+        "hornActive": {
+          "type": "boolean",
+          "description": "Horn honking indicator."
+        },
+        "online": {
+          "type": "boolean",
+          "description": "Whether player is actively driving or connected."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last telemetry sync."
+        }
+      },
+      "required": [
+        "userId",
+        "driverName",
+        "truckId",
+        "paintColorHex",
+        "roadS",
+        "laneOffset",
+        "speedKmh",
+        "headlightsOn",
+        "hornActive",
+        "online",
+        "updatedAt"
+      ]
+    },
+    "ConvoyMessage": {
+      "title": "ConvoyMessage",
+      "description": "CB radio chat message inside a multiplayer convoy room.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Sender Firebase UID."
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Sender driver display name."
+        },
+        "text": {
+          "type": "string",
+          "description": "Chat message body (1-200 chars)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when message was transmitted."
+        }
+      },
+      "required": ["userId", "senderName", "text", "createdAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/DriverProfile" },
-      "description": "Stores each driver's career profile, garage ownership, and control settings."
+      "description": "Stores each driver's career profile, garage ownership, workshop customization, damage, and control settings."
     },
     "/users/{userId}/deliveries/{deliveryId}": {
       "schema": { "$ref": "#/entities/DeliveryRecord" },
       "description": "Stores completed freight haul records for each driver."
+    },
+    "/convoyRooms/{roomId}": {
+      "schema": { "$ref": "#/entities/ConvoyRoom" },
+      "description": "Stores active multiplayer convoy rooms."
+    },
+    "/convoyRooms/{roomId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/ConvoyPlayer" },
+      "description": "Stores synchronized vehicle telemetry for players in a convoy room."
+    },
+    "/convoyRooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ConvoyMessage" },
+      "description": "Stores CB radio chat messages for a convoy room."
     }
   }
 }
