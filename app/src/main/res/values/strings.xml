@@ -7,7 +7,9 @@
     <string name="tab_routes">Rutas</string>
     <string name="tab_garage">Garaje</string>
     <string name="tab_convoy">Convoy</string>
-    <string name="tab_career">Carrera</string>
+    <string name="tab_career">Perfil</string>
+    <string name="profile_screen_title">Gestión de Perfil</string>
+    <string name="profile_back_cd">Volver al Centro de Despacho</string>
     <string name="drive_now">CONDUCIR AHORA</string>
     <string name="pause_title">Simulación en Pausa</string>
     <string name="resume_drive">Reanudar Ruta</string>

@@ -54,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -109,7 +110,7 @@ fun PrecisionSteeringWheel(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(164.dp)
+            .size(168.dp)
             .testTag("precision_steering_wheel")
             .pointerInput(sensitivity) {
                 val center = Offset(size.width / 2f, size.height / 2f)
@@ -154,15 +155,15 @@ fun PrecisionSteeringWheel(
             val r = size.minDimension * 0.43f
             val center = Offset(size.width / 2f, size.height / 2f)
 
-            // Subtle outer precision arc indicator
+            // Outer translucent steering arc gauge
             drawArc(
                 color = Color.White.copy(alpha = 0.14f),
                 startAngle = 140f,
                 sweepAngle = 260f,
                 useCenter = false,
-                topLeft = Offset(center.x - r - 10f, center.y - r - 10f),
-                size = Size((r + 10f) * 2f, (r + 10f) * 2f),
-                style = Stroke(width = 5f, cap = StrokeCap.Round)
+                topLeft = Offset(center.x - r - 11f, center.y - r - 11f),
+                size = Size((r + 11f) * 2f, (r + 11f) * 2f),
+                style = Stroke(width = 4.5f, cap = StrokeCap.Round)
             )
             val sweep = (wheelAngleDeg / 270f) * 130f
             if (abs(sweep) > 1f) {
@@ -171,27 +172,47 @@ fun PrecisionSteeringWheel(
                     startAngle = -90f,
                     sweepAngle = sweep,
                     useCenter = false,
-                    topLeft = Offset(center.x - r - 10f, center.y - r - 10f),
-                    size = Size((r + 10f) * 2f, (r + 10f) * 2f),
-                    style = Stroke(width = 6f, cap = StrokeCap.Round)
+                    topLeft = Offset(center.x - r - 11f, center.y - r - 11f),
+                    size = Size((r + 11f) * 2f, (r + 11f) * 2f),
+                    style = Stroke(width = 5.5f, cap = StrokeCap.Round)
                 )
             }
 
             rotate(degrees = wheelAngleDeg, pivot = center) {
-                // Wheel outer leather rim
+                // Subtle drop shadow behind leather rim
                 drawCircle(
-                    color = Color(0xFF141A22),
+                    color = Color.Black.copy(alpha = 0.48f),
+                    radius = r,
+                    center = Offset(center.x + 2f, center.y + 4f),
+                    style = Stroke(width = 26f)
+                )
+                // Metallic brushed spokes (T-bar semi-truck geometry)
+                val spokeBrush = Brush.linearGradient(
+                    listOf(Color(0xFF475569), Color(0xFFCBD5E1), Color(0xFF334155))
+                )
+                drawLine(spokeBrush, Offset(center.x - r + 10f, center.y + 2f), Offset(center.x + r - 10f, center.y + 2f), strokeWidth = 17f, cap = StrokeCap.Round)
+                drawLine(spokeBrush, center, Offset(center.x, center.y + r - 10f), strokeWidth = 17f, cap = StrokeCap.Round)
+                // Outer stitched dark leather wheel rim
+                drawCircle(
+                    color = Color(0xFF10151C),
                     radius = r,
                     center = center,
                     style = Stroke(width = 24f)
                 )
                 drawCircle(
-                    color = Color(0xFF2D3748),
+                    color = Color(0xFF28323F),
                     radius = r,
                     center = center,
-                    style = Stroke(width = 16f)
+                    style = Stroke(width = 14f)
                 )
-                // Top amber 12-o'clock center band
+                // Subtle highlight rim bevel
+                drawCircle(
+                    color = Color.White.copy(alpha = if (isDragging) 0.24f else 0.12f),
+                    radius = r + 6f,
+                    center = center,
+                    style = Stroke(width = 1.5f)
+                )
+                // Top amber 12-o'clock alignment band
                 drawArc(
                     color = AmberDiesel,
                     startAngle = -98f,
@@ -199,15 +220,16 @@ fun PrecisionSteeringWheel(
                     useCenter = false,
                     topLeft = Offset(center.x - r, center.y - r),
                     size = Size(r * 2f, r * 2f),
-                    style = Stroke(width = 18f)
+                    style = Stroke(width = 20f)
                 )
-                // Metallic spokes (left, right, bottom)
-                val spokeColor = Color(0xFF94A3B8)
-                drawLine(spokeColor, Offset(center.x - r + 10f, center.y), Offset(center.x + r - 10f, center.y), strokeWidth = 14f, cap = StrokeCap.Round)
-                drawLine(spokeColor, center, Offset(center.x, center.y + r - 10f), strokeWidth = 14f, cap = StrokeCap.Round)
-                // Center horn hub
-                drawCircle(color = Color(0xFF1E293B), radius = r * 0.30f, center = center)
-                drawCircle(color = AmberDiesel, radius = r * 0.14f, center = center, style = Stroke(width = 3f))
+                // Brushed center horn cap with chrome ring
+                drawCircle(
+                    brush = Brush.radialGradient(listOf(Color(0xFF293548), Color(0xFF0F1622)), center = center, radius = r * 0.34f),
+                    radius = r * 0.32f,
+                    center = center
+                )
+                drawCircle(color = Color(0xFF64748B), radius = r * 0.32f, center = center, style = Stroke(width = 2.5f))
+                drawCircle(color = AmberDiesel, radius = r * 0.11f, center = center, style = Stroke(width = 2.5f))
             }
         }
     }
@@ -347,20 +369,21 @@ fun AnalogPedal(
     modifier: Modifier = Modifier
 ) {
     var level by remember { mutableFloatStateOf(0f) }
+    val pressed = level > 0.05f
 
     Box(
         modifier = modifier
             .size(width = widthDp.dp, height = heightDp.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(
                 Brush.verticalGradient(
-                    listOf(Color(0xFF283240), Color(0xFF161C24), Color(0xFF0E1319))
+                    listOf(Color(0xB82A3442), Color(0xCC12171E), Color(0xE00A0D12))
                 )
             )
             .border(
-                width = if (level > 0.05f) 2.dp else 1.5.dp,
-                color = if (level > 0.05f) accentColor else GunmetalBorder,
-                shape = RoundedCornerShape(16.dp)
+                width = if (pressed) 2.dp else 1.2.dp,
+                color = if (pressed) accentColor else Color.White.copy(alpha = 0.24f),
+                shape = RoundedCornerShape(14.dp)
             )
             .pointerInput(Unit) {
                 awaitPointerEventScope {
@@ -389,7 +412,7 @@ fun AnalogPedal(
                 }
             }
     ) {
-        // Fill bar showing exact analog pedal depression
+        // Fill glow bar showing exact analog pedal depression
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -397,11 +420,11 @@ fun AnalogPedal(
                 .fillMaxHeight(level)
                 .background(
                     Brush.verticalGradient(
-                        listOf(accentColor.copy(alpha = 0.82f), accentColor.copy(alpha = 0.32f))
+                        listOf(accentColor.copy(alpha = 0.84f), accentColor.copy(alpha = 0.24f))
                     )
                 )
         )
-        // Machined rubber-grip pedal ribs + label
+        // Brushed aluminum/rubber non-slip horizontal ribs + crisp label
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -409,21 +432,21 @@ fun AnalogPedal(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            repeat(5) {
+            repeat(6) {
                 Box(
                     modifier = Modifier
-                        .width((widthDp * 0.62f).dp)
+                        .width((widthDp * 0.66f).dp)
                         .height(4.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF090C10))
-                        .border(0.5.dp, Color.White.copy(alpha = 0.22f), CircleShape)
+                        .background(Color(0xCC090C10))
+                        .border(0.6.dp, Color.White.copy(alpha = 0.26f), CircleShape)
                 )
             }
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = if (pressed) Color.White else Color(0xFFE2E8F0)
             )
         }
     }
@@ -449,88 +472,107 @@ fun AuxiliaryTruckBar(
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
-    Row(
-        modifier = modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        color = Color(0x9E0B1017),
+        shape = CircleShape,
+        modifier = modifier.border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
     ) {
-        AuxChip(
-            label = "IZQ",
-            active = leftBlinker,
-            activeColor = AmberDiesel,
-            onClick = onToggleLeftBlinker,
-            testTag = "btn_blinker_left"
-        )
-        AuxChip(
-            label = "DER",
-            active = rightBlinker,
-            activeColor = AmberDiesel,
-            onClick = onToggleRightBlinker,
-            testTag = "btn_blinker_right"
-        )
-        AuxChip(
-            icon = Icons.Filled.Highlight,
-            label = "LUZ",
-            active = headlightsOn,
-            activeColor = CobaltBeacon,
-            onClick = onToggleLights,
-            testTag = "btn_headlights"
-        )
-        AuxChip(
-            icon = Icons.Filled.WaterDrop,
-            label = when (wiperMode) {
-                1 -> "LIMP I"
-                2 -> "LIMP II"
-                else -> "LIMP"
-            },
-            active = wiperMode > 0,
-            activeColor = Color(0xFF38BDF8),
-            onClick = onCycleWiper,
-            testTag = "btn_wipers"
-        )
-        AuxChip(
-            icon = Icons.Filled.Visibility,
-            label = "ESP",
-            active = mirrorsVisible,
-            activeColor = EmeraldCargo,
-            onClick = onToggleMirrors,
-            testTag = "btn_mirrors"
-        )
-        AuxChip(
-            icon = Icons.Filled.Speed,
-            label = "RET",
-            active = retarderOn,
-            activeColor = AmberDiesel,
-            onClick = onToggleRetarder,
-            testTag = "btn_retarder"
-        )
-        AuxChip(
-            icon = Icons.Filled.Lock,
-            label = "P",
-            active = parkingBrake,
-            activeColor = CrimsonBrake,
-            onClick = onToggleParking,
-            testTag = "btn_parking_brake"
-        )
-        Surface(
-            onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onHorn()
-            },
-            color = CabMetal.copy(alpha = 0.9f),
-            shape = RoundedCornerShape(12.dp),
+        Row(
             modifier = Modifier
-                .size(48.dp)
-                .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
-                .testTag("btn_horn")
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Filled.Campaign,
-                    contentDescription = "Claxon",
-                    tint = AmberDiesel,
-                    modifier = Modifier.size(22.dp)
-                )
+            AuxChip(
+                label = "◄",
+                active = leftBlinker,
+                activeColor = AmberDiesel,
+                onClick = onToggleLeftBlinker,
+                testTag = "btn_blinker_left"
+            )
+            AuxChip(
+                label = "►",
+                active = rightBlinker,
+                activeColor = AmberDiesel,
+                onClick = onToggleRightBlinker,
+                testTag = "btn_blinker_right"
+            )
+            AuxChip(
+                icon = Icons.Filled.Highlight,
+                label = "LUZ",
+                active = headlightsOn,
+                activeColor = CobaltBeacon,
+                onClick = onToggleLights,
+                testTag = "btn_headlights"
+            )
+            AuxChip(
+                icon = Icons.Filled.WaterDrop,
+                label = when (wiperMode) {
+                    1 -> "LIMP I"
+                    2 -> "LIMP II"
+                    else -> "LIMP"
+                },
+                active = wiperMode > 0,
+                activeColor = Color(0xFF38BDF8),
+                onClick = onCycleWiper,
+                testTag = "btn_wipers"
+            )
+            AuxChip(
+                icon = Icons.Filled.Visibility,
+                label = "ESP",
+                active = mirrorsVisible,
+                activeColor = EmeraldCargo,
+                onClick = onToggleMirrors,
+                testTag = "btn_mirrors"
+            )
+            AuxChip(
+                icon = Icons.Filled.Speed,
+                label = "RET",
+                active = retarderOn,
+                activeColor = AmberDiesel,
+                onClick = onToggleRetarder,
+                testTag = "btn_retarder"
+            )
+            AuxChip(
+                icon = Icons.Filled.Lock,
+                label = "P",
+                active = parkingBrake,
+                activeColor = CrimsonBrake,
+                onClick = onToggleParking,
+                testTag = "btn_parking_brake"
+            )
+            // Prominent BUSSID-style Air Horn / Telolet trigger button
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onHorn()
+                },
+                color = AmberDiesel.copy(alpha = 0.22f),
+                shape = CircleShape,
+                modifier = Modifier
+                    .height(48.dp)
+                    .border(1.5.dp, AmberDiesel, CircleShape)
+                    .testTag("btn_horn")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Campaign,
+                        contentDescription = "Claxon",
+                        tint = AmberDiesel,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "CLAXON",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AmberDiesel,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
@@ -547,11 +589,11 @@ private fun AuxChip(
 ) {
     Surface(
         onClick = onClick,
-        color = if (active) activeColor.copy(alpha = 0.25f) else SteelSlate.copy(alpha = 0.85f),
-        shape = RoundedCornerShape(12.dp),
+        color = if (active) activeColor.copy(alpha = 0.28f) else Color(0x8A18212C),
+        shape = CircleShape,
         modifier = Modifier
             .height(48.dp)
-            .border(1.dp, if (active) activeColor else GunmetalBorder, RoundedCornerShape(12.dp))
+            .border(1.dp, if (active) activeColor else Color.White.copy(alpha = 0.14f), CircleShape)
             .testTag(testTag)
     ) {
         Row(
@@ -563,7 +605,7 @@ private fun AuxChip(
                 Icon(
                     imageVector = icon,
                     contentDescription = label,
-                    tint = if (active) activeColor else Color(0xFF9FB0C3),
+                    tint = if (active) activeColor else Color(0xFFA8B8C8),
                     modifier = Modifier.size(16.dp)
                 )
             }
@@ -583,11 +625,11 @@ fun CurveRadarIndicator(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = SteelSlate.copy(alpha = 0.86f),
+        color = Color(0xDC0B111A),
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .size(56.dp)
-            .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
+            .border(1.2.dp, CobaltBeacon.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
     ) {
         Canvas(modifier = Modifier.fillMaxSize().padding(8.dp)) {
             val w = size.width
@@ -1354,32 +1396,29 @@ fun RearviewMirror2D(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = Color(0xEE0D131B),
+        color = Color(0xE60B1018),
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
-            .size(width = 166.dp, height = 62.dp)
-            .border(2.dp, Color(0xFF64748B), RoundedCornerShape(14.dp))
+            .size(width = 152.dp, height = 54.dp)
+            .border(1.8.dp, Color(0xFF94A3B8), RoundedCornerShape(14.dp))
             .testTag("rearview_mirror_2d")
     ) {
         Box(modifier = Modifier.fillMaxSize().padding(3.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
-                // Sky reflection in top 40% of convex mirror
                 val skyColor = if (nightFactor > 0.55f) Color(0xFF0A1426) else Color(0xFF4F88BA)
                 drawRoundRect(
                     color = skyColor,
                     cornerRadius = CornerRadius(10f, 10f),
                     size = Size(w, h * 0.42f)
                 )
-                // Asphalt behind player in bottom 58%
                 drawRoundRect(
                     color = Color(0xFF28303B),
                     topLeft = Offset(0f, h * 0.40f),
                     size = Size(w, h * 0.60f),
                     cornerRadius = CornerRadius(8f, 8f)
                 )
-                // Perspective lane dividers converging at horizon
                 drawLine(
                     color = Color(0xFFE2E8F0).copy(alpha = 0.5f),
                     start = Offset(w * 0.48f, h * 0.40f),
@@ -1392,7 +1431,6 @@ fun RearviewMirror2D(
                     end = Offset(w * 0.75f, h),
                     strokeWidth = 2f
                 )
-                // Trailing AI traffic vehicles (0 to 95m behind player)
                 for (v in traffic) {
                     val behindDist = roadProgressMeters - v.s
                     if (behindDist in 3f..95f) {
@@ -1408,12 +1446,10 @@ fun RearviewMirror2D(
                             size = Size(vw, vh),
                             cornerRadius = CornerRadius(3f, 3f)
                         )
-                        // Headlights visible in rearview mirror!
                         drawCircle(Color(0xFFFFF5CC), radius = (1.5f + depth * 2f), center = Offset(vx - vw * 0.3f, vy))
                         drawCircle(Color(0xFFFFF5CC), radius = (1.5f + depth * 2f), center = Offset(vx + vw * 0.3f, vy))
                     }
                 }
-                // Trailing Convoy buddies in cyan
                 for (cp in remoteConvoyPlayers) {
                     val behindDist = roadProgressMeters - cp.roadS.toFloat()
                     if (behindDist in 3f..140f) {
@@ -1430,9 +1466,16 @@ fun RearviewMirror2D(
                         )
                     }
                 }
+                // Subtle diagonal glass glare
+                drawLine(
+                    color = Color.White.copy(alpha = 0.14f),
+                    start = Offset(w * 0.10f, 0f),
+                    end = Offset(w * 0.34f, h),
+                    strokeWidth = 10f
+                )
             }
             Text(
-                text = "RETROVISOR",
+                text = "ESPEJO",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF94A3B8),
                 modifier = Modifier.align(Alignment.TopEnd).padding(end = 5.dp, top = 1.dp)
@@ -1448,43 +1491,75 @@ fun Truck2DShowroomPreview(
         paintHex = truck.defaultPaintHex,
         trailerType = truck.defaultTrailerType
     ),
+    showGarageStageBackdrop: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        drawRect(
-            brush = Brush.verticalGradient(
-                listOf(Color(0xFF141D29), Color(0xFF0B1018))
+    Box(modifier = modifier) {
+        if (showGarageStageBackdrop) {
+            Image(
+                painter = painterResource(id = R.drawable.img_garage_stage),
+                contentDescription = "Escenario de taller 2D",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
-        )
-        drawRect(
-            color = Color(0xFF1E293B),
-            topLeft = Offset(0f, h * 0.80f),
-            size = Size(w, h * 0.20f)
-        )
-        val scale = (w / 6.8f).coerceAtMost(h / 4.4f)
-        val anchorX = w * 0.34f
-        val groundY = h * 0.82f
-        drawTruckRig2DSide(
-            truck = truck,
-            routeId = "pacific_coast",
-            visualConfig = visualConfig,
-            anchorX = anchorX,
-            groundY = groundY,
-            scale = scale,
-            wheelAngleRad = 0f,
-            cabPitchRad = 0f,
-            bouncePx = 0f,
-            headlightsOn = true,
-            braking = false,
-            reversing = false,
-            blinkerOn = false,
-            nightFactor = 0.25f,
-            throttleLevel = 0f,
-            simClock = 0f,
-            showTrailer = false
-        )
+        }
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            if (!showGarageStageBackdrop) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0xFF141D29), Color(0xFF0B1018))
+                    )
+                )
+                drawRect(
+                    color = Color(0xFF1E293B),
+                    topLeft = Offset(0f, h * 0.80f),
+                    size = Size(w, h * 0.20f)
+                )
+            } else {
+                // Soft grounding vignette + showroom spotlight reflection cone on concrete bay
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0x3805080D), Color.Transparent, Color(0xBD060A10)),
+                        startY = 0f,
+                        endY = h
+                    )
+                )
+                drawOval(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0x38FFF1C9), Color(0x1438BDF8), Color.Transparent),
+                        center = Offset(w * 0.48f, h * 0.87f),
+                        radius = w * 0.42f
+                    ),
+                    topLeft = Offset(w * 0.12f, h * 0.72f),
+                    size = Size(w * 0.72f, h * 0.24f),
+                    blendMode = BlendMode.Screen
+                )
+            }
+            val scale = (w / 5.75f).coerceAtMost(h / 3.85f)
+            val anchorX = w * 0.33f
+            val groundY = h * 0.86f
+            drawTruckRig2DSide(
+                truck = truck,
+                routeId = "pacific_coast",
+                visualConfig = visualConfig,
+                anchorX = anchorX,
+                groundY = groundY,
+                scale = scale,
+                wheelAngleRad = 0f,
+                cabPitchRad = 0f,
+                bouncePx = 0f,
+                headlightsOn = true,
+                braking = false,
+                reversing = false,
+                blinkerOn = false,
+                nightFactor = 0.22f,
+                throttleLevel = 0f,
+                simClock = 0f,
+                showTrailer = false
+            )
+        }
     }
 }
 
@@ -1501,52 +1576,51 @@ fun SpeedFuelCluster(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = ObsidianNight.copy(alpha = 0.84f),
-        shape = RoundedCornerShape(16.dp),
+        color = Color(0xB8090E16),
+        shape = RoundedCornerShape(18.dp),
         modifier = modifier
-            .border(1.dp, GunmetalBorder, RoundedCornerShape(16.dp))
+            .border(1.2.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(18.dp))
             .testTag("speed_fuel_cluster")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = if (compact) 10.dp else 14.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = if (compact) 10.dp else 14.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)
         ) {
-            // Precision 2D Analog Arc Speed & RPM Dial
+            // Sleek BUSSID-Style Illuminated Analog/Digital Speed & RPM Dial
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier.size(if (compact) 54.dp else 62.dp)
+                modifier = Modifier.size(if (compact) 52.dp else 60.dp)
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val pad = 4f
                     val arcSize = Size(size.width - pad * 2f, size.height - pad * 2f)
                     val topLeft = Offset(pad, pad)
                     drawArc(
-                        color = Color(0xFF283240),
-                        startAngle = 140f,
-                        sweepAngle = 260f,
+                        color = Color(0xFF1E293B),
+                        startAngle = 135f,
+                        sweepAngle = 270f,
                         useCenter = false,
                         topLeft = topLeft,
                         size = arcSize,
                         style = Stroke(width = 6f, cap = StrokeCap.Round)
                     )
-                    val speedSweep = ((speedKmh / 125f).coerceIn(0f, 1f)) * 260f
+                    val speedSweep = ((speedKmh / 125f).coerceIn(0f, 1f)) * 270f
                     drawArc(
-                        color = if (speeding) CrimsonBrake else CobaltBeacon,
-                        startAngle = 140f,
+                        brush = Brush.sweepGradient(listOf(CobaltBeacon, EmeraldCargo, AmberDiesel)),
+                        startAngle = 135f,
                         sweepAngle = speedSweep,
                         useCenter = false,
                         topLeft = topLeft,
                         size = arcSize,
                         style = Stroke(width = 6f, cap = StrokeCap.Round)
                     )
-                    // Inner thin RPM ring
                     val rpmPad = 11f
                     val rpmArc = Size(size.width - rpmPad * 2f, size.height - rpmPad * 2f)
-                    val rpmSweep = ((rpm / 2200f).coerceIn(0f, 1f)) * 260f
+                    val rpmSweep = ((rpm / 2200f).coerceIn(0f, 1f)) * 270f
                     drawArc(
                         color = if (rpm > 1850) CrimsonBrake else AmberDiesel,
-                        startAngle = 140f,
+                        startAngle = 135f,
                         sweepAngle = rpmSweep,
                         useCenter = false,
                         topLeft = Offset(rpmPad, rpmPad),
@@ -1569,14 +1643,13 @@ fun SpeedFuelCluster(
                 }
             }
 
-            // Gear + Diesel Fuel Micro-Gauge
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Surface(
-                        color = AmberDiesel.copy(alpha = 0.2f),
+                        color = AmberDiesel.copy(alpha = 0.22f),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.border(1.dp, AmberDiesel, RoundedCornerShape(8.dp))
                     ) {
@@ -1585,14 +1658,14 @@ fun SpeedFuelCluster(
                             style = MaterialTheme.typography.labelLarge,
                             color = AmberDiesel,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                         )
                     }
                     Surface(
                         color = Color.White,
                         shape = CircleShape,
                         modifier = Modifier
-                            .size(28.dp)
+                            .size(26.dp)
                             .border(2.5.dp, CrimsonBrake, CircleShape)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -1605,14 +1678,13 @@ fun SpeedFuelCluster(
                         }
                     }
                 }
-                // Compact Diesel Fuel Level Gauge
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Box(
                         modifier = Modifier
-                            .width(54.dp)
+                            .width(52.dp)
                             .height(5.dp)
                             .clip(CircleShape)
                             .background(CabMetal)

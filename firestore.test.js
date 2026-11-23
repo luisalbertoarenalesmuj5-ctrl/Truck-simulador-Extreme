@@ -23,6 +23,8 @@ function validDriverProfilePayload(uid, now = new Date(Date.now() - 5000)) {
     totalDistanceKm: 0.0,
     deliveriesCompleted: 0,
     xp: 0,
+    level: 1,
+    claimedMilestoneIds: [],
     selectedTruckId: "nordic_fh540",
     unlockedTruckIds: ["nordic_fh540"],
     paintColorHex: "#1E5BB8",
@@ -71,6 +73,29 @@ function validDeliveryPayload(uid, now = new Date(Date.now() - 2000)) {
     durationSeconds: 185,
     perfectDelivery: true,
     createdAt: now,
+  };
+}
+
+function validContractPayload(uid, difficulty = "ALTA", status = "AVAILABLE", now = new Date(Date.now() - 2000)) {
+  return {
+    userId: uid,
+    title: "PetroRuta ADR • Cisterna Jet-A1",
+    companyName: "PetroRuta ADR",
+    cargoName: "Queroseno de Aviación Jet-A1",
+    cargoTons: 24,
+    trailerType: "FUEL_TANKER",
+    originCity: "Flagstaff",
+    destinationCity: "Gallup",
+    routeId: "desert_night",
+    distanceKm: 78.0,
+    difficulty,
+    rewardCredits: 22400,
+    rewardXp: 640,
+    bonusPerfectCredits: 4000,
+    requiredLevel: 2,
+    status,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -193,13 +218,14 @@ test("Owner can create driver profile and execute all five partial update action
     })
   );
 
-  // Action 3: Complete a delivery and credit career stats + damage
+  // Action 3: Complete a delivery and credit career stats + level + damage
   await assertSucceeds(
     profileRef.update({
       credits: 19350,
       totalDistanceKm: 45.0,
       deliveriesCompleted: 1,
       xp: 450,
+      level: 1,
       truckDamagePercent: 12,
       updatedAt: new Date(Date.now() - 500),
     })
@@ -227,9 +253,24 @@ test("Owner can create driver profile and execute all five partial update action
       updatedAt: new Date(Date.now() - 100),
     })
   );
+
+  // Action 6: Profile management & career progression (level, xp, credits, milestones)
+  await assertSucceeds(
+    profileRef.update({
+      driverName: "Carlos Ruta Pro",
+      xp: 700,
+      level: 2,
+      credits: 17750,
+      claimedMilestoneIds: ["starter_license"],
+      steeringMode: "WHEEL",
+      steeringSensitivity: 1.15,
+      cameraMode: "CAB_2D",
+      updatedAt: new Date(Date.now() - 50),
+    })
+  );
 });
 
-test("Legacy driver profile without workshop fields can be created and updated smoothly", async () => {
+test("Legacy driver profile without workshop or level fields can be created and updated smoothly", async () => {
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   const profileRef = aliceDb.collection("users").doc(ALICE_UID);
 
@@ -240,6 +281,16 @@ test("Legacy driver profile without workshop fields can be created and updated s
       liveryStyle: "BOLT",
       bullbarInstalled: true,
       updatedAt: new Date(Date.now() - 100),
+    })
+  );
+  await assertSucceeds(
+    profileRef.update({
+      driverName: "Conductor Actualizado",
+      level: 1,
+      xp: 250,
+      credits: 26500,
+      claimedMilestoneIds: ["starter_license"],
+      updatedAt: new Date(Date.now() - 50),
     })
   );
 });
@@ -267,6 +318,24 @@ test("Rejects profile spoofing, ghost fields, immutable createdAt tamper, and in
   await assertFails(
     profileRef.update({
       createdAt: new Date(Date.now() - 100),
+      updatedAt: new Date(Date.now() - 100),
+    })
+  );
+
+  // Invalid level bounds or XP/level regression blocked
+  await assertFails(
+    profileRef.update({
+      level: 0,
+      xp: 100,
+      credits: 25000,
+      updatedAt: new Date(Date.now() - 100),
+    })
+  );
+  await assertFails(
+    profileRef.update({
+      level: 501,
+      xp: 100,
+      credits: 25000,
       updatedAt: new Date(Date.now() - 100),
     })
   );
@@ -453,6 +522,94 @@ test("Convoy rooms: public listing, private invite get, member join/leave, telem
       status: "DRIVING",
       routeId: "pacific_coast",
       updatedAt: new Date(Date.now() - 100),
+    })
+  );
+});
+
+test("Delivery contracts: owner can generate, accept, complete, and terminal-lock; cross-user and invalid writes fail", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  const aliceProfile = aliceDb.collection("users").doc(ALICE_UID);
+  const aliceContracts = aliceProfile.collection("contracts");
+  const contractRef = aliceContracts.doc("contract_01");
+
+  await assertSucceeds(aliceProfile.set(validDriverProfilePayload(ALICE_UID)));
+  await assertSucceeds(contractRef.set(validContractPayload(ALICE_UID)));
+
+  // Owner can list contracts ordered by createdAt
+  await assertSucceeds(aliceContracts.orderBy("createdAt", "desc").get());
+
+  // Unauthenticated & cross-user access denied
+  await assertFails(unauthDb.collection("users").doc(ALICE_UID).collection("contracts").get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("contracts").get());
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("contracts").doc("contract_02").set(validContractPayload(BOB_UID))
+  );
+
+  // Invalid difficulty or ghost field rejected
+  await assertFails(
+    aliceContracts.doc("contract_bad").set({
+      ...validContractPayload(ALICE_UID),
+      difficulty: "IMPOSIBLE",
+    })
+  );
+
+  // Cannot create directly as COMPLETED
+  await assertFails(
+    aliceContracts.doc("contract_done").set(validContractPayload(ALICE_UID, "FACIL", "COMPLETED"))
+  );
+
+  // Accept contract (AVAILABLE -> ACTIVE) and store activeContractId on profile
+  await assertSucceeds(
+    contractRef.update({
+      status: "ACTIVE",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertSucceeds(
+    aliceProfile.update({
+      activeContractId: "contract_01",
+      updatedAt: new Date(Date.now() - 900),
+    })
+  );
+
+  // Cannot tamper rewardCredits during status transition
+  await assertFails(
+    contractRef.update({
+      status: "COMPLETED",
+      rewardCredits: 499999,
+      updatedAt: new Date(Date.now() - 800),
+    })
+  );
+
+  // Complete contract (ACTIVE -> COMPLETED) and credit profile stats
+  await assertSucceeds(
+    contractRef.update({
+      status: "COMPLETED",
+      updatedAt: new Date(Date.now() - 700),
+    })
+  );
+  await assertSucceeds(
+    aliceProfile.update({
+      credits: 51400,
+      totalDistanceKm: 78.0,
+      deliveriesCompleted: 1,
+      contractsCompleted: 1,
+      activeContractId: "",
+      xp: 790,
+      level: 2,
+      truckDamagePercent: 0,
+      updatedAt: new Date(Date.now() - 600),
+    })
+  );
+
+  // Terminal state lock: COMPLETED contract cannot be mutated again
+  await assertFails(
+    contractRef.update({
+      status: "AVAILABLE",
+      updatedAt: new Date(Date.now() - 500),
     })
   );
 });

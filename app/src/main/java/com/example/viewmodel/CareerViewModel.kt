@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.CareerRepository
 import com.example.model.CameraMode
+import com.example.model.CareerCertification
+import com.example.model.CareerMilestone
+import com.example.model.DeliveryContract
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
 import com.example.model.LiveryStyle
@@ -77,6 +80,24 @@ class CareerViewModel(
                 initialValue = UiState.Loading
             )
 
+    val contractsState: StateFlow<UiState<List<DeliveryContract>>> =
+        repository.observeContracts(currentUserId)
+            .map<List<DeliveryContract>, UiState<List<DeliveryContract>>> { UiState.Success(it) }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                val rootError = firestoreError ?: error
+                Log.w(TAG, "Error observing contracts", rootError)
+                emit(UiState.Error(rootError.localizedMessage ?: "No se pudieron cargar los contratos"))
+            }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+                initialValue = UiState.Loading
+            )
+
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
@@ -86,7 +107,9 @@ class CareerViewModel(
     init {
         viewModelScope.launch {
             val result = repository.ensureDriverProfileInitialized(initialDisplayName)
-            result.onFailure { err ->
+            result.onSuccess {
+                repository.ensureContractsPopulated(driverLevel = 1L)
+            }.onFailure { err ->
                 _actionMessage.value = err.localizedMessage ?: "Error al inicializar licencia"
             }
         }
@@ -196,14 +219,101 @@ class CareerViewModel(
         cameraMode: CameraMode,
         driverName: String
     ) {
+        val current = (profileState.value as? UiState.Success)?.data
         viewModelScope.launch {
             _isBusy.value = true
-            val result = repository.updateControlSettings(steeringMode, sensitivity, cameraMode, driverName)
+            val result = if (current != null) {
+                repository.savePlayerProfile(current, driverName, steeringMode, sensitivity, cameraMode)
+            } else {
+                repository.updateControlSettings(steeringMode, sensitivity, cameraMode, driverName)
+            }
             _isBusy.value = false
             result.onSuccess {
-                _actionMessage.value = "Configuración guardada en la nube"
+                _actionMessage.value = "Perfil y progreso guardados en Firestore"
             }.onFailure { err ->
-                _actionMessage.value = err.localizedMessage ?: "Error al guardar configuración"
+                _actionMessage.value = err.localizedMessage ?: "Error al guardar perfil"
+            }
+        }
+    }
+
+    fun claimMilestone(milestone: CareerMilestone) {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val prevLevel = current.effectiveLevel()
+            val result = repository.claimCareerMilestone(current, milestone)
+            _isBusy.value = false
+            result.onSuccess { updated ->
+                val leveledUp = updated.level > prevLevel
+                _actionMessage.value = if (leveledUp) {
+                    "¡Subiste a Nivel ${updated.level}! +${milestone.rewardXp} XP y +$${milestone.rewardCredits} en Firestore"
+                } else {
+                    "Hito completado: +${milestone.rewardXp} XP y +$${milestone.rewardCredits} guardados"
+                }
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo reclamar el hito"
+            }
+        }
+    }
+
+    fun completeCertification(certification: CareerCertification) {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val prevLevel = current.effectiveLevel()
+            val result = repository.completeCareerCertification(current, certification)
+            _isBusy.value = false
+            result.onSuccess { updated ->
+                val leveledUp = updated.level > prevLevel
+                _actionMessage.value = if (leveledUp) {
+                    "¡${certification.title} aprobada! Ascendiste a Nivel ${updated.level} (+${certification.grantXp} XP)"
+                } else {
+                    "¡${certification.title} completada! +${certification.grantXp} XP guardados en Firestore"
+                }
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo completar la certificación"
+            }
+        }
+    }
+
+    fun generateNewContracts() {
+        val current = (profileState.value as? UiState.Success)?.data
+        val level = current?.effectiveLevel() ?: 1L
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = repository.generateRandomContracts(driverLevel = level, clearAvailable = true)
+            _isBusy.value = false
+            result.onSuccess { count ->
+                _actionMessage.value = "$count nuevos contratos aleatorios guardados en Firestore"
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudieron generar contratos"
+            }
+        }
+    }
+
+    fun acceptContract(contract: DeliveryContract) {
+        val current = (profileState.value as? UiState.Success)?.data ?: return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = repository.acceptContract(current, contract)
+            _isBusy.value = false
+            result.onSuccess {
+                _actionMessage.value = "Contrato aceptado: ${contract.cargoName}"
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo aceptar el contrato"
+            }
+        }
+    }
+
+    fun releaseContract(contract: DeliveryContract) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = repository.releaseActiveContract(contract)
+            _isBusy.value = false
+            result.onSuccess {
+                _actionMessage.value = "Contrato liberado en el tablón de despacho"
+            }.onFailure { err ->
+                _actionMessage.value = err.localizedMessage ?: "No se pudo liberar el contrato"
             }
         }
     }
@@ -212,11 +322,19 @@ class CareerViewModel(
         route: RouteSpec,
         truckId: String,
         damagePercent: Int,
-        durationSeconds: Long
+        durationSeconds: Long,
+        activeContract: DeliveryContract? = null
     ): Result<Long> {
         val current = (profileState.value as? UiState.Success)?.data
             ?: return Result.failure(IllegalStateException("Perfil no disponible"))
-        return repository.recordCompletedDelivery(current, route, truckId, damagePercent, durationSeconds)
+        return repository.recordCompletedDelivery(
+            currentProfile = current,
+            route = route,
+            truckId = truckId,
+            damagePercent = damagePercent,
+            durationSeconds = durationSeconds,
+            activeContract = activeContract
+        )
     }
 
     private companion object {

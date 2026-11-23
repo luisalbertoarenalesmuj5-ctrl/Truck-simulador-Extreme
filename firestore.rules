@@ -54,6 +54,21 @@ service cloud.firestore {
       return style in ['CLASSIC', 'RACING', 'BOLT', 'EXECUTIVE'];
     }
 
+    function isValidTrailerType(trailer) {
+      return trailer in [
+        'REEFER_BOX', 'FUEL_TANKER', 'TIMBER_LOGS',
+        'FLATBED_EXCAVATOR', 'CAR_CARRIER', 'WIND_TURBINE', 'AGRI_GRAIN'
+      ];
+    }
+
+    function isValidContractDifficulty(diff) {
+      return diff in ['FACIL', 'MEDIA', 'ALTA', 'EXTREMA'];
+    }
+
+    function isValidContractStatus(status) {
+      return status in ['AVAILABLE', 'ACTIVE', 'COMPLETED'];
+    }
+
     function isValidDriverProfile(data, userId) {
       return data.userId is string && data.userId == userId &&
              data.driverName is string && data.driverName.size() >= 2 && data.driverName.size() <= 40 &&
@@ -61,6 +76,10 @@ service cloud.firestore {
              data.totalDistanceKm is number && data.totalDistanceKm >= 0 && data.totalDistanceKm <= 10000000 &&
              data.deliveriesCompleted is int && data.deliveriesCompleted >= 0 && data.deliveriesCompleted <= 1000000 &&
              data.xp is int && data.xp >= 0 && data.xp <= 100000000 &&
+             (!('level' in data) || (data.level is int && data.level >= 1 && data.level <= 500)) &&
+             (!('claimedMilestoneIds' in data) || (data.claimedMilestoneIds is list && data.claimedMilestoneIds.size() <= 20 && (data.claimedMilestoneIds.size() == 0 || data.claimedMilestoneIds[0] is string))) &&
+             (!('activeContractId' in data) || (data.activeContractId is string && data.activeContractId.size() <= 128)) &&
+             (!('contractsCompleted' in data) || (data.contractsCompleted is int && data.contractsCompleted >= 0 && data.contractsCompleted <= 1000000)) &&
              isValidTruckId(data.selectedTruckId) &&
              data.unlockedTruckIds is list && data.unlockedTruckIds.size() >= 1 && data.unlockedTruckIds.size() <= 12 &&
              data.unlockedTruckIds[0] is string &&
@@ -90,6 +109,27 @@ service cloud.firestore {
              data.durationSeconds is int && data.durationSeconds >= 1 && data.durationSeconds <= 86400 &&
              data.perfectDelivery is bool &&
              data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isValidDeliveryContract(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.title is string && data.title.size() >= 3 && data.title.size() <= 80 &&
+             data.companyName is string && data.companyName.size() >= 2 && data.companyName.size() <= 50 &&
+             data.cargoName is string && data.cargoName.size() >= 2 && data.cargoName.size() <= 80 &&
+             data.cargoTons is int && data.cargoTons >= 5 && data.cargoTons <= 60 &&
+             isValidTrailerType(data.trailerType) &&
+             data.originCity is string && data.originCity.size() >= 2 && data.originCity.size() <= 40 &&
+             data.destinationCity is string && data.destinationCity.size() >= 2 && data.destinationCity.size() <= 40 &&
+             data.routeId is string && data.routeId.size() >= 1 && data.routeId.size() <= 64 &&
+             data.distanceKm is number && data.distanceKm > 0 && data.distanceKm <= 5000 &&
+             isValidContractDifficulty(data.difficulty) &&
+             data.rewardCredits is int && data.rewardCredits >= 1000 && data.rewardCredits <= 500000 &&
+             data.rewardXp is int && data.rewardXp >= 50 && data.rewardXp <= 25000 &&
+             data.bonusPerfectCredits is int && data.bonusPerfectCredits >= 0 && data.bonusPerfectCredits <= 150000 &&
+             data.requiredLevel is int && data.requiredLevel >= 1 && data.requiredLevel <= 500 &&
+             isValidContractStatus(data.status) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
     function isValidConvoyRoom(data) {
@@ -145,7 +185,9 @@ service cloud.firestore {
                        ]) &&
                        incoming().keys().hasOnly([
                          'userId', 'driverName', 'credits', 'totalDistanceKm',
-                         'deliveriesCompleted', 'xp', 'selectedTruckId', 'unlockedTruckIds',
+                         'deliveriesCompleted', 'xp', 'level', 'claimedMilestoneIds',
+                         'activeContractId', 'contractsCompleted',
+                         'selectedTruckId', 'unlockedTruckIds',
                          'paintColorHex', 'liveryStyle', 'bullbarInstalled',
                          'roofLightbarInstalled', 'aeroSpoilerInstalled', 'chromeExhaustInstalled',
                          'truckDamagePercent',
@@ -161,15 +203,16 @@ service cloud.firestore {
                        (
                          // Action 1: Update control / camera / truck selection settings
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'driverName', 'selectedTruckId', 'steeringMode', 'steeringSensitivity', 'cameraMode', 'updatedAt'
+                           'driverName', 'selectedTruckId', 'steeringMode', 'steeringSensitivity', 'cameraMode', 'level', 'updatedAt'
                          ]) ||
                          // Action 2: Purchase / unlock a truck in the garage
                          incoming().diff(existing()).affectedKeys().hasOnly([
                            'credits', 'selectedTruckId', 'unlockedTruckIds', 'updatedAt'
                          ]) ||
-                         // Action 3: Complete a freight delivery
+                         // Action 3: Complete a freight delivery or contract
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'credits', 'totalDistanceKm', 'deliveriesCompleted', 'xp', 'truckDamagePercent', 'updatedAt'
+                           'credits', 'totalDistanceKm', 'deliveriesCompleted', 'contractsCompleted',
+                           'activeContractId', 'xp', 'level', 'truckDamagePercent', 'updatedAt'
                          ]) ||
                          // Action 4: Customize paint & accessories in Workshop
                          incoming().diff(existing()).affectedKeys().hasOnly([
@@ -179,6 +222,17 @@ service cloud.firestore {
                          // Action 5: Repair truck or adjust workshop credits/damage
                          incoming().diff(existing()).affectedKeys().hasOnly([
                            'credits', 'truckDamagePercent', 'updatedAt'
+                         ]) ||
+                         // Action 6: Player profile management & career progression (level, xp, credits, milestones, controls)
+                         ((!('level' in existing()) || !('level' in incoming()) || incoming().level >= existing().level) &&
+                          incoming().xp >= existing().xp &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'driverName', 'level', 'xp', 'credits', 'claimedMilestoneIds',
+                            'steeringMode', 'steeringSensitivity', 'cameraMode', 'updatedAt'
+                          ])) ||
+                         // Action 7: Select or release active contract on driver profile
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'activeContractId', 'updatedAt'
                          ])
                        );
 
@@ -206,6 +260,49 @@ service cloud.firestore {
         // Delivery history entries are immutable audit logs
         allow update: if false;
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(deliveryId);
+      }
+
+      match /contracts/{contractId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(contractId);
+        allow list: if isOwner(userId) && isValidId(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(contractId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'title', 'companyName', 'cargoName', 'cargoTons',
+                           'trailerType', 'originCity', 'destinationCity', 'routeId',
+                           'distanceKm', 'difficulty', 'rewardCredits', 'rewardXp',
+                           'bonusPerfectCredits', 'requiredLevel', 'status',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'title', 'companyName', 'cargoName', 'cargoTons',
+                           'trailerType', 'originCity', 'destinationCity', 'routeId',
+                           'distanceKm', 'difficulty', 'rewardCredits', 'rewardXp',
+                           'bonusPerfectCredits', 'requiredLevel', 'status',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().status in ['AVAILABLE', 'ACTIVE'] &&
+                         isValidDeliveryContract(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(contractId) &&
+                         isValidDeliveryContract(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         existing().status != 'COMPLETED' &&
+                         (
+                           (existing().status == 'AVAILABLE' && incoming().status == 'ACTIVE' &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                           (existing().status == 'ACTIVE' && incoming().status == 'AVAILABLE' &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                           (incoming().status == 'COMPLETED' &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                         );
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(contractId);
       }
     }
 

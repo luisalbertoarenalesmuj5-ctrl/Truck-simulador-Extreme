@@ -3,6 +3,11 @@ package com.example.data
 import android.content.Context
 import com.example.R
 import com.example.model.CameraMode
+import com.example.model.CareerCertification
+import com.example.model.CareerMilestone
+import com.example.model.ContractGenerator
+import com.example.model.ContractStatus
+import com.example.model.DeliveryContract
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
 import com.example.model.LiveryStyle
@@ -100,6 +105,217 @@ class CareerRepository(
         )
     }
 
+    fun observeContracts(userId: String): Flow<List<DeliveryContract>> = flow {
+        val uid = requireUserId()
+        check(uid == userId) { "Sesión cambiada; rechazando lectura cruzada." }
+        val path = "users/$userId/contracts"
+        emitAll(
+            db.collection("users").document(userId).collection("contracts")
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        DeliveryContract::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exceptionToLog = firestoreError ?: (error as? Exception)
+                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
+                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
+                    }
+                    throw error
+                }
+        )
+    }
+
+    suspend fun ensureContractsPopulated(driverLevel: Long): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}/contracts"
+        return try {
+            val uid = requireUserId()
+            val contractsRef = db.collection("users").document(uid).collection("contracts")
+            path = contractsRef.path
+            val existing = contractsRef.limit(20).get().await()
+            val hasOpenContracts = existing.documents.any { doc ->
+                val status = doc.getString("status")
+                status == ContractStatus.AVAILABLE.name || status == ContractStatus.ACTIVE.name
+            }
+            if (!hasOpenContracts) {
+                generateRandomContracts(driverLevel = driverLevel, clearAvailable = false).getOrThrow()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun generateRandomContracts(
+        driverLevel: Long,
+        clearAvailable: Boolean = true
+    ): Result<Int> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}/contracts"
+        return try {
+            val uid = requireUserId()
+            val contractsRef = db.collection("users").document(uid).collection("contracts")
+            path = contractsRef.path
+            val snapshot = contractsRef.limit(30).get().await()
+            val batch = db.batch()
+
+            if (clearAvailable) {
+                snapshot.documents
+                    .filter { it.getString("status") == ContractStatus.AVAILABLE.name }
+                    .forEach { batch.delete(it.reference) }
+            }
+
+            // Keep completed contract history bounded to most recent 8
+            val completedDocs = snapshot.documents
+                .filter { it.getString("status") == ContractStatus.COMPLETED.name }
+            if (completedDocs.size > 8) {
+                completedDocs.drop(8).forEach { batch.delete(it.reference) }
+            }
+
+            val generated = ContractGenerator.generateBatch(
+                userId = uid,
+                driverLevel = driverLevel.coerceIn(1L, DriverProfile.MAX_LEVEL),
+                count = 5
+            )
+            generated.forEach { contract ->
+                val docRef = contractsRef.document()
+                val payload = mapOf(
+                    "userId" to uid,
+                    "title" to contract.title,
+                    "companyName" to contract.companyName,
+                    "cargoName" to contract.cargoName,
+                    "cargoTons" to contract.cargoTons,
+                    "trailerType" to contract.trailerType,
+                    "originCity" to contract.originCity,
+                    "destinationCity" to contract.destinationCity,
+                    "routeId" to contract.routeId,
+                    "distanceKm" to contract.distanceKm,
+                    "difficulty" to contract.difficulty,
+                    "rewardCredits" to contract.rewardCredits,
+                    "rewardXp" to contract.rewardXp,
+                    "bonusPerfectCredits" to contract.bonusPerfectCredits,
+                    "requiredLevel" to contract.requiredLevel,
+                    "status" to ContractStatus.AVAILABLE.name,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                batch.set(docRef, payload)
+            }
+            batch.commit().await()
+            Result.success(generated.size)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun acceptContract(
+        currentProfile: DriverProfile,
+        contract: DeliveryContract
+    ): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}/contracts"
+        return try {
+            val uid = requireUserId()
+            require(contract.id.isNotBlank()) { "Contrato sin identificador válido." }
+            require(contract.status != ContractStatus.COMPLETED.name) { "Este contrato ya fue completado." }
+            require(currentProfile.effectiveLevel() >= contract.requiredLevel) {
+                "Requiere Nivel ${contract.requiredLevel} para aceptar este contrato."
+            }
+            val userRef = db.collection("users").document(uid)
+            val contractsRef = userRef.collection("contracts")
+            val targetRef = contractsRef.document(contract.id)
+            path = targetRef.path
+
+            val activeDocs = contractsRef
+                .whereEqualTo("status", ContractStatus.ACTIVE.name)
+                .get()
+                .await()
+
+            val batch = db.batch()
+            activeDocs.documents
+                .filter { it.id != contract.id }
+                .forEach { doc ->
+                    batch.update(
+                        doc.reference,
+                        mapOf(
+                            "status" to ContractStatus.AVAILABLE.name,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+            if (contract.status != ContractStatus.ACTIVE.name) {
+                batch.update(
+                    targetRef,
+                    mapOf(
+                        "status" to ContractStatus.ACTIVE.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+            batch.update(
+                userRef,
+                mapOf(
+                    "activeContractId" to contract.id,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            batch.commit().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun releaseActiveContract(contract: DeliveryContract): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}/contracts"
+        return try {
+            val uid = requireUserId()
+            require(contract.id.isNotBlank()) { "Contrato inválido." }
+            val userRef = db.collection("users").document(uid)
+            val targetRef = userRef.collection("contracts").document(contract.id)
+            path = targetRef.path
+
+            val batch = db.batch()
+            if (contract.status == ContractStatus.ACTIVE.name) {
+                batch.update(
+                    targetRef,
+                    mapOf(
+                        "status" to ContractStatus.AVAILABLE.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+            batch.update(
+                userRef,
+                mapOf(
+                    "activeContractId" to "",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            batch.commit().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun ensureDriverProfileInitialized(displayNameRaw: String?): Result<Unit> {
         var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
         return try {
@@ -118,6 +334,10 @@ class CareerRepository(
                     "totalDistanceKm" to 0.0,
                     "deliveriesCompleted" to 0L,
                     "xp" to 0L,
+                    "level" to 1L,
+                    "claimedMilestoneIds" to emptyList<String>(),
+                    "activeContractId" to "",
+                    "contractsCompleted" to 0L,
                     "selectedTruckId" to "nordic_fh540",
                     "unlockedTruckIds" to listOf("nordic_fh540"),
                     "paintColorHex" to "#1E5BB8",
@@ -134,12 +354,150 @@ class CareerRepository(
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 docRef.set(payload).await()
+            } else if (!existing.contains("level")) {
+                val existingXp = (existing.get("xp") as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L
+                val syncedLevel = DriverProfile.levelForXp(existingXp)
+                docRef.update(
+                    mapOf(
+                        "level" to syncedLevel,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun savePlayerProfile(
+        currentProfile: DriverProfile,
+        driverName: String,
+        steeringMode: SteeringMode,
+        sensitivity: Double,
+        cameraMode: CameraMode
+    ): Result<Unit> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val uid = requireUserId()
+            val docRef = db.collection("users").document(uid)
+            path = docRef.path
+            val safeName = driverName.trim().take(40).let {
+                require(it.length >= 2) { "El nombre del conductor debe tener al menos 2 caracteres." }
+                it
+            }
+            val clampedSensitivity = sensitivity.coerceIn(0.4, 2.0)
+            val syncedLevel = currentProfile.effectiveLevel()
+            val safeXp = currentProfile.xp.coerceIn(0L, 100_000_000L)
+            val safeCredits = currentProfile.credits.coerceIn(0L, 100_000_000L)
+            docRef.update(
+                mapOf(
+                    "driverName" to safeName,
+                    "level" to syncedLevel,
+                    "xp" to safeXp,
+                    "credits" to safeCredits,
+                    "steeringMode" to steeringMode.name,
+                    "steeringSensitivity" to clampedSensitivity,
+                    "cameraMode" to cameraMode.name,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun claimCareerMilestone(
+        currentProfile: DriverProfile,
+        milestone: CareerMilestone
+    ): Result<DriverProfile> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val uid = requireUserId()
+            val docRef = db.collection("users").document(uid)
+            path = docRef.path
+            require(milestone.id !in currentProfile.claimedMilestoneIds) {
+                "Este hito ya fue reclamado en tu carrera."
+            }
+            require(milestone.isUnlocked(currentProfile)) {
+                "Aún no cumples el requisito: ${milestone.requirementLabel}"
+            }
+            val nextXp = (currentProfile.xp + milestone.rewardXp).coerceAtMost(100_000_000L)
+            val nextLevel = maxOf(currentProfile.effectiveLevel(), DriverProfile.levelForXp(nextXp))
+            val nextCredits = (currentProfile.credits + milestone.rewardCredits).coerceAtMost(100_000_000L)
+            val nextClaimed = (currentProfile.claimedMilestoneIds + milestone.id).distinct().take(20)
+            docRef.update(
+                mapOf(
+                    "xp" to nextXp,
+                    "level" to nextLevel,
+                    "credits" to nextCredits,
+                    "claimedMilestoneIds" to nextClaimed,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(
+                currentProfile.copy(
+                    xp = nextXp,
+                    level = nextLevel,
+                    credits = nextCredits,
+                    claimedMilestoneIds = nextClaimed
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun completeCareerCertification(
+        currentProfile: DriverProfile,
+        certification: CareerCertification
+    ): Result<DriverProfile> {
+        var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val uid = requireUserId()
+            val docRef = db.collection("users").document(uid)
+            path = docRef.path
+            require(certification.id !in currentProfile.claimedMilestoneIds) {
+                "Ya cuentas con esta certificación profesional."
+            }
+            require(currentProfile.credits >= certification.costCredits) {
+                "Créditos insuficientes para cursar ${certification.title}."
+            }
+            val nextCredits = (currentProfile.credits - certification.costCredits).coerceAtLeast(0L)
+            val nextXp = (currentProfile.xp + certification.grantXp).coerceAtMost(100_000_000L)
+            val nextLevel = maxOf(currentProfile.effectiveLevel(), DriverProfile.levelForXp(nextXp))
+            val nextClaimed = (currentProfile.claimedMilestoneIds + certification.id).distinct().take(20)
+            docRef.update(
+                mapOf(
+                    "credits" to nextCredits,
+                    "xp" to nextXp,
+                    "level" to nextLevel,
+                    "claimedMilestoneIds" to nextClaimed,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(
+                currentProfile.copy(
+                    credits = nextCredits,
+                    xp = nextXp,
+                    level = nextLevel,
+                    claimedMilestoneIds = nextClaimed
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
             Result.failure(e)
         }
     }
@@ -290,7 +648,8 @@ class CareerRepository(
         route: RouteSpec,
         truckId: String,
         damagePercent: Int,
-        durationSeconds: Long
+        durationSeconds: Long,
+        activeContract: DeliveryContract? = null
     ): Result<Long> {
         var path = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
         return try {
@@ -299,10 +658,20 @@ class CareerRepository(
             val safeDuration = durationSeconds.coerceIn(1L, 86400L)
             val isPerfect = safeDamage == 0
             val damageFactor = (1.0 - (safeDamage * 0.006)).coerceAtLeast(0.4)
-            val perfectBonus = if (isPerfect) (route.baseRewardCredits * 0.15).roundToLong() else 0L
-            val earnedCredits = ((route.baseRewardCredits * damageFactor).roundToLong() + perfectBonus)
+
+            val baseReward = activeContract?.rewardCredits ?: route.baseRewardCredits
+            val perfectBonus = if (isPerfect) {
+                activeContract?.bonusPerfectCredits ?: (baseReward * 0.15).roundToLong()
+            } else {
+                0L
+            }
+            val earnedCredits = ((baseReward * damageFactor).roundToLong() + perfectBonus)
                 .coerceIn(500L, 1_000_000L)
-            val earnedXp = (route.displayDistanceKm * 10 + if (isPerfect) 150 else 50).roundToLong()
+            val earnedXp = if (activeContract != null) {
+                (activeContract.rewardXp + if (isPerfect) 150L else 40L).coerceIn(50L, 50_000L)
+            } else {
+                (route.displayDistanceKm * 10 + if (isPerfect) 150 else 50).roundToLong()
+            }
 
             val userRef = db.collection("users").document(uid)
             val deliveryRef = userRef.collection("deliveries").document()
@@ -322,18 +691,40 @@ class CareerRepository(
                 "perfectDelivery" to isPerfect,
                 "createdAt" to FieldValue.serverTimestamp()
             )
+            val nextXp = (currentProfile.xp + earnedXp).coerceAtMost(100_000_000L)
+            val nextLevel = maxOf(currentProfile.effectiveLevel(), DriverProfile.levelForXp(nextXp))
+            val isCompletingContract = activeContract != null &&
+                activeContract.id.isNotBlank() &&
+                activeContract.status != ContractStatus.COMPLETED.name
+
             batch.set(deliveryRef, deliveryPayload)
-            batch.update(
-                userRef,
-                mapOf(
-                    "credits" to (currentProfile.credits + earnedCredits).coerceAtMost(100_000_000L),
-                    "totalDistanceKm" to (currentProfile.totalDistanceKm + route.displayDistanceKm).coerceAtMost(10_000_000.0),
-                    "deliveriesCompleted" to (currentProfile.deliveriesCompleted + 1L),
-                    "xp" to (currentProfile.xp + earnedXp).coerceAtMost(100_000_000L),
-                    "truckDamagePercent" to safeDamage.toLong(),
-                    "updatedAt" to FieldValue.serverTimestamp()
+            if (isCompletingContract && activeContract != null) {
+                val contractRef = userRef.collection("contracts").document(activeContract.id)
+                batch.update(
+                    contractRef,
+                    mapOf(
+                        "status" to ContractStatus.COMPLETED.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
                 )
+            }
+
+            val profileUpdates = mutableMapOf<String, Any>(
+                "credits" to (currentProfile.credits + earnedCredits).coerceAtMost(100_000_000L),
+                "totalDistanceKm" to (currentProfile.totalDistanceKm + route.displayDistanceKm).coerceAtMost(10_000_000.0),
+                "deliveriesCompleted" to (currentProfile.deliveriesCompleted + 1L),
+                "xp" to nextXp,
+                "level" to nextLevel,
+                "truckDamagePercent" to safeDamage.toLong(),
+                "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (isCompletingContract && activeContract != null) {
+                profileUpdates["contractsCompleted"] = currentProfile.contractsCompleted + 1L
+                if (currentProfile.activeContractId == activeContract.id) {
+                    profileUpdates["activeContractId"] = ""
+                }
+            }
+            batch.update(userRef, profileUpdates)
             batch.commit().await()
             Result.success(earnedCredits)
         } catch (e: CancellationException) {

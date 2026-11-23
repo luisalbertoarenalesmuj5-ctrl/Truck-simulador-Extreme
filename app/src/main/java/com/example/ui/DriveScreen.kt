@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,7 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Traffic
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WbSunny
@@ -104,6 +107,7 @@ import com.example.ui.theme.SteelSlate
 import com.example.viewmodel.ConvoyViewModel
 import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DriveScreen(
     truck: TruckSpec,
@@ -137,6 +141,7 @@ fun DriveScreen(
     var showFullMap by remember { mutableStateOf(false) }
     var showMirror by remember { mutableStateOf(true) }
     var showConvoyRadio by remember { mutableStateOf(false) }
+    var hudToolsExpanded by remember { mutableStateOf(false) }
 
     var throttle by remember { mutableFloatStateOf(0f) }
     var brake by remember { mutableFloatStateOf(0f) }
@@ -373,14 +378,14 @@ fun DriveScreen(
             )
         }
 
-        // 2. Top Telemetry & Route Progress HUD
+        // 2. BUSSID-Style Sleek Translucent Perimeter HUD (>82% Open Viewport)
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -398,8 +403,62 @@ fun DriveScreen(
                     compact = isCompactWidth
                 )
 
+                if (!isCompactWidth) {
+                    // Wide / Landscape inline translucent route + zone pill
+                    Surface(
+                        color = Color(0xAA090E16),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp)
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = telemetry.activeZoneLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CobaltBeacon,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = if (route.isFreeRoam) "${"%.1f".format(telemetry.totalDrivenKm)} km"
+                                    else "${"%.1f".format(telemetry.remainingDisplayKm)} km",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = AmberDiesel,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Daño ${telemetry.damagePercent}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (telemetry.damagePercent > 15) CrimsonBrake else EmeraldCargo,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { telemetry.progressFraction },
+                                color = EmeraldCargo,
+                                trackColor = Color(0xFF1E293B),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(5.dp)
+                                    .clip(CircleShape)
+                            )
+                        }
+                    }
+                }
+
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     RoadMapMiniPanel(
@@ -415,6 +474,7 @@ fun DriveScreen(
                         CurveRadarIndicator(curvature = telemetry.upcomingCurvature)
                     }
 
+                    // Camera Cycle Button
                     Surface(
                         onClick = {
                             if (!telemetry.driverOnFoot) {
@@ -422,21 +482,21 @@ fun DriveScreen(
                                 cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
                             }
                         },
-                        color = ObsidianNight.copy(alpha = 0.80f),
+                        color = Color(0xB8090E16),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
-                            .height(50.dp)
+                            .height(48.dp)
                             .border(
-                                1.dp,
-                                if (telemetry.driverOnFoot) GunmetalBorder.copy(alpha = 0.5f) else GunmetalBorder,
+                                1.2.dp,
+                                if (telemetry.driverOnFoot) Color.White.copy(alpha = 0.08f) else CobaltBeacon.copy(alpha = 0.55f),
                                 RoundedCornerShape(14.dp)
                             )
                             .testTag("btn_switch_camera")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Cameraswitch,
@@ -448,19 +508,45 @@ fun DriveScreen(
                                 Text(
                                     text = if (telemetry.driverOnFoot) "A Pie 2D" else cameraMode.label,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
                     }
 
+                    // Quick Environment & Tools Toggle
                     Surface(
-                        onClick = { paused = true },
-                        color = ObsidianNight.copy(alpha = 0.80f),
+                        onClick = { hudToolsExpanded = !hudToolsExpanded },
+                        color = if (hudToolsExpanded) AmberDiesel.copy(alpha = 0.24f) else Color(0xB8090E16),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
-                            .size(50.dp)
-                            .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
+                            .size(48.dp)
+                            .border(
+                                1.2.dp,
+                                if (hudToolsExpanded) AmberDiesel else Color.White.copy(alpha = 0.16f),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .testTag("btn_toggle_hud_tools")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Tune,
+                                contentDescription = "Herramientas de clima y entorno",
+                                tint = if (hudToolsExpanded) AmberDiesel else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    // Pause Button
+                    Surface(
+                        onClick = { paused = true },
+                        color = Color(0xB8090E16),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .border(1.2.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(14.dp))
                             .testTag("btn_pause_sim")
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -468,391 +554,360 @@ fun DriveScreen(
                                 imageVector = Icons.Filled.Pause,
                                 contentDescription = "Pausar simulación",
                                 tint = Color.White,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Route progress + Active Zone + Fuel + Cargo/Chassis Damage strip
-            Surface(
-                color = ObsidianNight.copy(alpha = 0.72f),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, GunmetalBorder.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+            // Slim compact progress bar for narrow portrait devices
+            if (isCompactWidth) {
+                Surface(
+                    color = Color(0xA4090E16),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
                 ) {
-                    Text(
-                        text = if (route.isFreeRoam) "${"%.1f".format(telemetry.totalDrivenKm)} km" else "${"%.1f".format(telemetry.remainingDisplayKm)} km",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = AmberDiesel,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = telemetry.activeZoneLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CobaltBeacon,
-                        maxLines = 1
-                    )
-                    LinearProgressIndicator(
-                        progress = { telemetry.progressFraction },
-                        color = EmeraldCargo,
-                        trackColor = CabMetal,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(6.dp)
-                            .clip(CircleShape)
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Icon(
-                            imageVector = Icons.Filled.LocalGasStation,
-                            contentDescription = "Combustible Diésel",
-                            tint = if (telemetry.lowFuelWarning) CrimsonBrake else AmberDiesel,
-                            modifier = Modifier.size(15.dp)
-                        )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text(
-                            text = "${telemetry.fuelPercent}%",
+                            text = if (route.isFreeRoam) "${"%.1f".format(telemetry.totalDrivenKm)} km"
+                            else "${"%.1f".format(telemetry.remainingDisplayKm)} km",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (telemetry.lowFuelWarning) CrimsonBrake else Color.White,
+                            color = AmberDiesel,
                             fontWeight = FontWeight.Bold
                         )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Filled.Warning,
-                            contentDescription = "Daño del camión",
-                            tint = if (telemetry.damagePercent > 15) CrimsonBrake else EmeraldCargo,
-                            modifier = Modifier.size(14.dp)
+                        Text(
+                            text = telemetry.activeZoneLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CobaltBeacon,
+                            maxLines = 1
                         )
-                        Spacer(Modifier.width(3.dp))
+                        LinearProgressIndicator(
+                            progress = { telemetry.progressFraction },
+                            color = EmeraldCargo,
+                            trackColor = Color(0xFF1E293B),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                        )
                         Text(
                             text = "${telemetry.damagePercent}%",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (telemetry.damagePercent > 15) CrimsonBrake else Color.White
+                            color = if (telemetry.damagePercent > 15) CrimsonBrake else EmeraldCargo,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
 
-            // Quick Mode & Roadside Service Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Surface(
-                    onClick = {
-                        if (!telemetry.driverOnFoot) {
-                            val all = CameraMode.entries
-                            cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
-                        }
-                    },
-                    color = ObsidianNight.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .height(48.dp)
-                        .border(1.dp, CobaltBeacon.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                        .testTag("badge_camera_mode")
+            // Collapsible Environment & Camera Tools Strip
+            AnimatedVisibility(visible = hudToolsExpanded) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Visibility,
-                            contentDescription = "Cámara 2D activa",
-                            tint = CobaltBeacon,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (telemetry.driverOnFoot) "Hombre 2D" else cameraMode.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                Surface(
-                    onClick = {
-                        physics.cycleTimeOfDayPreset()
-                        telemetry = physics.readTelemetry()
-                    },
-                    color = ObsidianNight.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .height(48.dp)
-                        .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
-                        .testTag("btn_cycle_daynight")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.WbSunny,
-                            contentDescription = "Cambiar ciclo día y noche",
-                            tint = AmberDiesel,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Text(
-                            text = telemetry.dayPhaseLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Surface(
-                    onClick = {
-                        physics.cycleWeatherCondition()
-                        telemetry = physics.readTelemetry()
-                    },
-                    color = ObsidianNight.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .height(48.dp)
-                        .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
-                        .testTag("btn_cycle_weather")
-                ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 9.dp)) {
-                        Text(
-                            text = telemetry.weatherCondition.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CobaltBeacon,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Live Upcoming Traffic Light Indicator Pill
-                val lightState = telemetry.upcomingTrafficLight
-                if (lightState != null) {
-                    val lightColor = when (lightState) {
-                        TrafficLightState.GREEN -> EmeraldCargo
-                        TrafficLightState.AMBER -> AmberDiesel
-                        TrafficLightState.RED -> CrimsonBrake
-                    }
-                    val lightText = when (lightState) {
-                        TrafficLightState.GREEN -> "VERDE"
-                        TrafficLightState.AMBER -> "ÁMBAR"
-                        TrafficLightState.RED -> "ROJO"
-                    }
-                    Surface(
-                        color = lightColor.copy(alpha = 0.22f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .height(48.dp)
-                            .border(1.dp, lightColor, RoundedCornerShape(12.dp))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Filled.Traffic, contentDescription = "Semáforo", tint = lightColor, modifier = Modifier.size(16.dp))
-                            Text(
-                                text = "$lightText ${telemetry.upcomingTrafficLightDistMeters}m",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = lightColor,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                // Roadside Refuel Button
-                if (telemetry.nearFuelStation && !telemetry.driverOnFoot) {
                     Surface(
                         onClick = {
-                            if (physics.refuelAtStation()) {
-                                telemetry = physics.readTelemetry()
+                            if (!telemetry.driverOnFoot) {
+                                val all = CameraMode.entries
+                                cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
                             }
                         },
-                        color = EmeraldCargo.copy(alpha = 0.25f),
+                        color = Color(0xCC090E16),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .height(48.dp)
-                            .border(1.5.dp, EmeraldCargo, RoundedCornerShape(12.dp))
-                            .testTag("btn_refuel_diesel")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Filled.LocalGasStation, contentDescription = "Repostar Diésel", tint = EmeraldCargo, modifier = Modifier.size(17.dp))
-                            Text("REPOSTAR", style = MaterialTheme.typography.labelSmall, color = EmeraldCargo, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Roadside Workshop Repair Button
-                if (telemetry.nearWorkshop && telemetry.damagePercent > 0 && !telemetry.driverOnFoot) {
-                    val repairCost = telemetry.damagePercent * WorkshopCatalog.REPAIR_COST_PER_PERCENT
-                    val canPay = (profile?.credits ?: Long.MAX_VALUE) >= repairCost
-                    Surface(
-                        onClick = {
-                            if (canPay) {
-                                val repaired = physics.repairVehicleAtWorkshop()
-                                if (repaired >= 0) {
-                                    onRoadCreditAdjustment(-repairCost, 0)
-                                    telemetry = physics.readTelemetry()
-                                }
-                            }
-                        },
-                        color = Color(0xFF06B6D4).copy(alpha = 0.24f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .height(48.dp)
-                            .border(1.5.dp, Color(0xFF06B6D4), RoundedCornerShape(12.dp))
-                            .testTag("btn_roadside_repair")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Filled.Build, contentDescription = "Reparar en taller", tint = Color(0xFF06B6D4), modifier = Modifier.size(17.dp))
-                            Text(
-                                text = if (canPay) "REPARAR (-$$repairCost)" else "SIN CRÉDITOS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF06B6D4),
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                // Roadside Parking Rest Button
-                if (telemetry.nearParkingBay && !telemetry.driverOnFoot) {
-                    Surface(
-                        onClick = {
-                            if (physics.restAtParkingBay()) {
-                                telemetry = physics.readTelemetry()
-                            }
-                        },
-                        color = CobaltBeacon.copy(alpha = 0.24f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .height(48.dp)
-                            .border(1.5.dp, CobaltBeacon, RoundedCornerShape(12.dp))
-                            .testTag("btn_parking_rest")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Filled.Hotel, contentDescription = "Descansar en estacionamiento", tint = CobaltBeacon, modifier = Modifier.size(17.dp))
-                            Text("DESCANSAR", style = MaterialTheme.typography.labelSmall, color = CobaltBeacon, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Live Convoy CB Radio Button
-                if (activeConvoyRoomId != null) {
-                    Surface(
-                        onClick = { showConvoyRadio = true },
-                        color = AmberDiesel.copy(alpha = 0.24f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .height(48.dp)
-                            .border(1.dp, AmberDiesel, RoundedCornerShape(12.dp))
-                            .testTag("btn_convoy_radio")
+                            .border(1.dp, CobaltBeacon.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                            .testTag("badge_camera_mode")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Icon(Icons.Filled.Groups, contentDescription = "Radio Convoy", tint = AmberDiesel, modifier = Modifier.size(17.dp))
-                            Text("CB (${allConvoyPlayers.size})", style = MaterialTheme.typography.labelSmall, color = AmberDiesel, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Filled.Visibility, contentDescription = "Cámara 2D activa", tint = CobaltBeacon, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = if (telemetry.driverOnFoot) "Hombre 2D" else cameraMode.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
-                }
 
-                // Hombre On-Foot Exit
-                if (!telemetry.driverOnFoot) {
                     Surface(
                         onClick = {
-                            if (telemetry.canExitTruck) {
-                                throttle = 0f
-                                brake = 0f
-                                steerInput = 0f
-                                if (physics.exitTruckToFoot()) {
-                                    telemetry = physics.readTelemetry()
-                                }
-                            } else {
-                                exitHintVisible = true
-                            }
+                            physics.cycleTimeOfDayPreset()
+                            telemetry = physics.readTelemetry()
                         },
-                        color = if (telemetry.canExitTruck) AmberDiesel.copy(alpha = 0.22f) else ObsidianNight.copy(alpha = 0.72f),
+                        color = Color(0xCC090E16),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .height(48.dp)
-                            .border(
-                                1.dp,
-                                if (telemetry.canExitTruck) AmberDiesel else GunmetalBorder,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .testTag("btn_exit_cab_foot")
+                            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+                            .testTag("btn_cycle_daynight")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.DirectionsWalk,
-                                contentDescription = "Bajar del camión",
-                                tint = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Hombre",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
-                                fontWeight = FontWeight.Bold
-                            )
+                            Icon(Icons.Filled.WbSunny, contentDescription = "Cambiar ciclo día y noche", tint = AmberDiesel, modifier = Modifier.size(15.dp))
+                            Text(telemetry.dayPhaseLabel, style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        }
+                    }
+
+                    Surface(
+                        onClick = {
+                            physics.cycleWeatherCondition()
+                            telemetry = physics.readTelemetry()
+                        },
+                        color = Color(0xCC090E16),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+                            .testTag("btn_cycle_weather")
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                            Text(telemetry.weatherCondition.label, style = MaterialTheme.typography.labelSmall, color = CobaltBeacon, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
 
-            // Live 2D Rearview Mirror & Road Event Alerts
+            // Row below Top Bar: Windshield Mirror + Direct Hombre 2D button + Active Contextual Prompts
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                if (showMirror && !telemetry.driverOnFoot && !paused) {
-                    val nightFrac = if (telemetry.timeOfDay > 0.78f || telemetry.timeOfDay < 0.24f) 0.85f else 0.1f
-                    RearviewMirror2D(
-                        roadProgressMeters = telemetry.roadProgressMeters,
-                        playerLaneOffset = telemetry.laneOffset,
-                        traffic = mirrorTraffic,
-                        remoteConvoyPlayers = remoteConvoyPlayers,
-                        nightFactor = nightFrac
-                    )
-                } else {
-                    Spacer(Modifier.width(1.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    if (showMirror && !telemetry.driverOnFoot && !paused) {
+                        val nightFrac = if (telemetry.timeOfDay > 0.78f || telemetry.timeOfDay < 0.24f) 0.85f else 0.1f
+                        RearviewMirror2D(
+                            roadProgressMeters = telemetry.roadProgressMeters,
+                            playerLaneOffset = telemetry.laneOffset,
+                            traffic = mirrorTraffic,
+                            remoteConvoyPlayers = remoteConvoyPlayers,
+                            nightFactor = nightFrac
+                        )
+                    }
+
+                    // Always-accessible Hombre 2D On-Foot Exit Pill
+                    if (!telemetry.driverOnFoot) {
+                        Surface(
+                            onClick = {
+                                if (telemetry.canExitTruck) {
+                                    throttle = 0f
+                                    brake = 0f
+                                    steerInput = 0f
+                                    if (physics.exitTruckToFoot()) {
+                                        telemetry = physics.readTelemetry()
+                                    }
+                                } else {
+                                    exitHintVisible = true
+                                }
+                            },
+                            color = if (telemetry.canExitTruck) AmberDiesel.copy(alpha = 0.28f) else Color(0x9A090E16),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .border(
+                                    1.dp,
+                                    if (telemetry.canExitTruck) AmberDiesel else Color.White.copy(alpha = 0.16f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .testTag("btn_exit_cab_foot")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.DirectionsWalk,
+                                    contentDescription = "Bajar del camión",
+                                    tint = if (telemetry.canExitTruck) AmberDiesel else Color(0xFFB5C4D4),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Hombre",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (telemetry.canExitTruck) AmberDiesel else Color(0xFFB5C4D4),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
 
-                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Contextual Roadside Services, Traffic Light, CB & Alert Pills (Right-aligned)
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val lightState = telemetry.upcomingTrafficLight
+                        if (lightState != null) {
+                            val lightColor = when (lightState) {
+                                TrafficLightState.GREEN -> EmeraldCargo
+                                TrafficLightState.AMBER -> AmberDiesel
+                                TrafficLightState.RED -> CrimsonBrake
+                            }
+                            val lightText = when (lightState) {
+                                TrafficLightState.GREEN -> "VERDE"
+                                TrafficLightState.AMBER -> "ÁMBAR"
+                                TrafficLightState.RED -> "ROJO"
+                            }
+                            Surface(
+                                color = lightColor.copy(alpha = 0.24f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .border(1.2.dp, lightColor, RoundedCornerShape(12.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Filled.Traffic, contentDescription = "Semáforo", tint = lightColor, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        text = "$lightText ${telemetry.upcomingTrafficLightDistMeters}m",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = lightColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        if (telemetry.nearFuelStation && !telemetry.driverOnFoot) {
+                            Surface(
+                                onClick = {
+                                    if (physics.refuelAtStation()) {
+                                        telemetry = physics.readTelemetry()
+                                    }
+                                },
+                                color = EmeraldCargo.copy(alpha = 0.28f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .border(1.5.dp, EmeraldCargo, RoundedCornerShape(12.dp))
+                                    .testTag("btn_refuel_diesel")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Filled.LocalGasStation, contentDescription = "Repostar Diésel", tint = EmeraldCargo, modifier = Modifier.size(17.dp))
+                                    Text("REPOSTAR", style = MaterialTheme.typography.labelSmall, color = EmeraldCargo, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        if (telemetry.nearWorkshop && telemetry.damagePercent > 0 && !telemetry.driverOnFoot) {
+                            val repairCost = telemetry.damagePercent * WorkshopCatalog.REPAIR_COST_PER_PERCENT
+                            val canPay = (profile?.credits ?: Long.MAX_VALUE) >= repairCost
+                            Surface(
+                                onClick = {
+                                    if (canPay) {
+                                        val repaired = physics.repairVehicleAtWorkshop()
+                                        if (repaired >= 0) {
+                                            onRoadCreditAdjustment(-repairCost, 0)
+                                            telemetry = physics.readTelemetry()
+                                        }
+                                    }
+                                },
+                                color = Color(0xFF06B6D4).copy(alpha = 0.26f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .border(1.5.dp, Color(0xFF06B6D4), RoundedCornerShape(12.dp))
+                                    .testTag("btn_roadside_repair")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Filled.Build, contentDescription = "Reparar en taller", tint = Color(0xFF06B6D4), modifier = Modifier.size(17.dp))
+                                    Text(
+                                        text = if (canPay) "REPARAR (-$$repairCost)" else "SIN CRÉDITOS",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF06B6D4),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        if (telemetry.nearParkingBay && !telemetry.driverOnFoot) {
+                            Surface(
+                                onClick = {
+                                    if (physics.restAtParkingBay()) {
+                                        telemetry = physics.readTelemetry()
+                                    }
+                                },
+                                color = CobaltBeacon.copy(alpha = 0.26f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .border(1.5.dp, CobaltBeacon, RoundedCornerShape(12.dp))
+                                    .testTag("btn_parking_rest")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Filled.Hotel, contentDescription = "Descansar en estacionamiento", tint = CobaltBeacon, modifier = Modifier.size(17.dp))
+                                    Text("DESCANSAR", style = MaterialTheme.typography.labelSmall, color = CobaltBeacon, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        if (activeConvoyRoomId != null) {
+                            Surface(
+                                onClick = { showConvoyRadio = true },
+                                color = AmberDiesel.copy(alpha = 0.26f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .border(1.2.dp, AmberDiesel, RoundedCornerShape(12.dp))
+                                    .testTag("btn_convoy_radio")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(Icons.Filled.Groups, contentDescription = "Radio Convoy", tint = AmberDiesel, modifier = Modifier.size(17.dp))
+                                    Text("CB (${allConvoyPlayers.size})", style = MaterialTheme.typography.labelSmall, color = AmberDiesel, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
                     AnimatedVisibility(visible = activeAlertBanner != null) {
                         Surface(
-                            color = ObsidianNight.copy(alpha = 0.90f),
+                            color = Color(0xE0090E16),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.border(1.dp, AmberDiesel, RoundedCornerShape(10.dp))
                         ) {
@@ -867,7 +922,7 @@ fun DriveScreen(
                     }
                     AnimatedVisibility(visible = exitHintVisible) {
                         Surface(
-                            color = CrimsonBrake.copy(alpha = 0.88f),
+                            color = CrimsonBrake.copy(alpha = 0.90f),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Text(
@@ -1054,11 +1109,12 @@ fun DriveScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                    shape = MaterialTheme.shapes.large,
+                    colors = CardDefaults.cardColors(containerColor = Color(0xEE111924)),
+                    shape = RoundedCornerShape(22.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, GunmetalBorder, MaterialTheme.shapes.large)
+                        .widthIn(max = 460.dp)
+                        .border(1.2.dp, AmberDiesel.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
                 ) {
                     Column(
                         modifier = Modifier.padding(22.dp),
@@ -1180,11 +1236,12 @@ fun DriveScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                    shape = MaterialTheme.shapes.large,
+                    colors = CardDefaults.cardColors(containerColor = Color(0xEE111924)),
+                    shape = RoundedCornerShape(24.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.5.dp, EmeraldCargo, MaterialTheme.shapes.large)
+                        .widthIn(max = 480.dp)
+                        .border(1.5.dp, EmeraldCargo, RoundedCornerShape(24.dp))
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),

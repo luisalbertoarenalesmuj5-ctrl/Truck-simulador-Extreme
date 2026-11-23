@@ -64,6 +64,7 @@ import com.example.data.attemptAutoSignIn
 import com.example.data.onGoogleSignInClicked
 import com.example.ui.theme.AmberDiesel
 import com.example.ui.theme.CabMetal
+import com.example.ui.theme.CobaltBeacon
 import com.example.ui.theme.GunmetalBorder
 import com.example.ui.theme.ObsidianNight
 import com.example.ui.theme.SteelSlate
@@ -198,12 +199,18 @@ fun AuthScreen(
                 Spacer(Modifier.height(28.dp))
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SteelSlate.copy(alpha = 0.92f)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xE00E1622)),
                     shape = MaterialTheme.shapes.large,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, GunmetalBorder, MaterialTheme.shapes.large)
+                        .border(1.2.dp, AmberDiesel.copy(alpha = 0.42f), MaterialTheme.shapes.large)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .background(Brush.horizontalGradient(listOf(AmberDiesel, CobaltBeacon)))
+                    )
                     Column(
                         modifier = Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -211,7 +218,8 @@ fun AuthScreen(
                         Text(
                             text = "Licencia de Conductor en la Nube",
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(

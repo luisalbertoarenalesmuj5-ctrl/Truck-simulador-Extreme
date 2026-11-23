@@ -27,15 +27,18 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Explore
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.DirectionsCar
@@ -107,9 +111,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.signOutFromApp
 import com.example.model.CameraMode
+import com.example.model.CargoTrailerType
+import com.example.model.ContractDifficulty
+import com.example.model.ContractStatus
 import com.example.model.ConvoyMessage
 import com.example.model.ConvoyPlayer
 import com.example.model.ConvoyRoom
+import com.example.model.DeliveryContract
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
 import com.example.model.EnvironmentTheme
@@ -149,7 +157,8 @@ fun HubScreen(
         cameraMode: CameraMode,
         visualConfig: TruckVisualConfig,
         initialDamagePercent: Int,
-        activeConvoyRoomId: String?
+        activeConvoyRoomId: String?,
+        activeContract: DeliveryContract?
     ) -> Unit
 ) {
     val context = LocalContext.current
@@ -158,6 +167,7 @@ fun HubScreen(
 
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val deliveriesState by viewModel.deliveriesState.collectAsStateWithLifecycle()
+    val contractsState by viewModel.contractsState.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
 
@@ -170,6 +180,7 @@ fun HubScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedTab by remember { mutableIntStateOf(0) }
+    var showProfileScreen by remember { mutableStateOf(false) }
 
     LaunchedEffect(actionMessage) {
         val msg = actionMessage
@@ -185,6 +196,31 @@ fun HubScreen(
             snackbarHostState.showSnackbar(msg)
             convoyViewModel.clearMessage()
         }
+    }
+
+    val activeSuccessProfile = (profileState as? UiState.Success)?.data
+    if (showProfileScreen && activeSuccessProfile != null) {
+        ProfileManagementScreen(
+            profile = activeSuccessProfile,
+            deliveriesState = deliveriesState,
+            isBusy = isBusy,
+            snackbarHostState = snackbarHostState,
+            onSaveProfile = { mode, sens, cam, name ->
+                viewModel.updateControlSettings(mode, sens, cam, name)
+            },
+            onClaimMilestone = { milestone ->
+                viewModel.claimMilestone(milestone)
+            },
+            onCompleteCertification = { cert ->
+                viewModel.completeCertification(cert)
+            },
+            onBack = { showProfileScreen = false },
+            onSignOut = {
+                showProfileScreen = false
+                signOutFromApp(credentialManager, scope)
+            }
+        )
+        return
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(ObsidianNight)) {
@@ -319,6 +355,7 @@ fun HubScreen(
                             DriverTopBar(
                                 profile = profile,
                                 activeTruck = activeTruck,
+                                onOpenProfile = { showProfileScreen = true },
                                 onSignOut = { signOutFromApp(credentialManager, scope) }
                             )
 
@@ -332,6 +369,29 @@ fun HubScreen(
                                         profile = profile,
                                         activeTruck = activeTruck,
                                         visualConfig = baseVisualConfig,
+                                        contractsState = contractsState,
+                                        isBusy = isBusy,
+                                        onGenerateContracts = { viewModel.generateNewContracts() },
+                                        onAcceptContract = { contract -> viewModel.acceptContract(contract) },
+                                        onReleaseContract = { contract -> viewModel.releaseContract(contract) },
+                                        onLaunchContract = { contract ->
+                                            if (contract.status != ContractStatus.ACTIVE.name) {
+                                                viewModel.acceptContract(contract)
+                                            }
+                                            val contractRoute = contract.toRouteSpec()
+                                            val routeVisual = profile.toVisualConfig(activeTruck, contractRoute.trailerType)
+                                            onStartDrive(
+                                                activeTruck,
+                                                contractRoute,
+                                                profile.resolvedSteeringMode(),
+                                                profile.steeringSensitivity.toFloat(),
+                                                profile.resolvedCameraMode(),
+                                                routeVisual,
+                                                profile.truckDamagePercent.toInt(),
+                                                null,
+                                                contract
+                                            )
+                                        },
                                         onLaunchRoute = { route ->
                                             val routeVisual = profile.toVisualConfig(activeTruck, route.trailerType)
                                             onStartDrive(
@@ -342,6 +402,7 @@ fun HubScreen(
                                                 profile.resolvedCameraMode(),
                                                 routeVisual,
                                                 profile.truckDamagePercent.toInt(),
+                                                null,
                                                 null
                                             )
                                         }
@@ -400,17 +461,25 @@ fun HubScreen(
                                                 profile.resolvedCameraMode(),
                                                 routeVisual,
                                                 profile.truckDamagePercent.toInt(),
-                                                room.id
+                                                room.id,
+                                                null
                                             )
                                         }
                                     )
-                                    3 -> CareerAndControlsTab(
+                                    3 -> ProfileManagementContent(
                                         profile = profile,
                                         deliveriesState = deliveriesState,
                                         isBusy = isBusy,
-                                        onSaveSettings = { mode, sens, cam, name ->
+                                        onSaveProfile = { mode, sens, cam, name ->
                                             viewModel.updateControlSettings(mode, sens, cam, name)
-                                        }
+                                        },
+                                        onClaimMilestone = { milestone ->
+                                            viewModel.claimMilestone(milestone)
+                                        },
+                                        onCompleteCertification = { cert ->
+                                            viewModel.completeCertification(cert)
+                                        },
+                                        modifier = Modifier.fillMaxSize()
                                     )
                                 }
                             }
@@ -426,59 +495,111 @@ fun HubScreen(
 private fun DriverTopBar(
     profile: DriverProfile,
     activeTruck: TruckSpec,
+    onOpenProfile: () -> Unit,
     onSignOut: () -> Unit
 ) {
     Surface(
-        color = SteelSlate,
+        color = Color(0xF50E1520),
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, GunmetalBorder)
+            .border(1.dp, GunmetalBorder.copy(alpha = 0.7f))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_truck_icon),
-                    contentDescription = "Icono del conductor",
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenProfile)
+                    .padding(vertical = 2.dp, horizontal = 2.dp)
+                    .testTag("btn_open_profile")
+            ) {
+                Box(
                     modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                )
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.2.dp, AmberDiesel.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.img_truck_icon),
+                        contentDescription = "Abrir gestión de perfil del conductor",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = profile.driverName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Surface(
+                            color = AmberDiesel.copy(alpha = 0.18f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.border(1.dp, AmberDiesel.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
+                        ) {
+                            Text(
+                                text = "Nv.${profile.effectiveLevel()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = AmberDiesel,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     Text(
-                        text = profile.driverName,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${profile.driverRankTitle()} • ${activeTruck.name}",
+                        text = "${profile.xp} XP • ${activeTruck.name}",
                         style = MaterialTheme.typography.labelSmall,
                         color = AmberDiesel,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(3.dp))
+                    val xpFrac = profile.levelProgressFraction().coerceIn(0.08f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .width(128.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(CabMetal)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(xpFrac)
+                                .background(Brush.horizontalGradient(listOf(AmberDiesel, EmeraldCargo)))
+                        )
+                    }
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Surface(
-                    color = GoldTrophy.copy(alpha = 0.14f),
+                    color = GoldTrophy.copy(alpha = 0.16f),
                     shape = CircleShape,
-                    modifier = Modifier.border(1.dp, GoldTrophy.copy(alpha = 0.55f), CircleShape)
+                    modifier = Modifier.border(1.2.dp, GoldTrophy.copy(alpha = 0.65f), CircleShape)
                 ) {
                     Text(
                         text = "$${profile.credits}",
                         style = MaterialTheme.typography.labelLarge,
                         color = GoldTrophy,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 6.dp)
                     )
                 }
                 IconButton(
@@ -496,13 +617,38 @@ private fun DriverTopBar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RoutesDispatchTab(
     profile: DriverProfile,
     activeTruck: TruckSpec,
     visualConfig: TruckVisualConfig,
+    contractsState: UiState<List<DeliveryContract>>,
+    isBusy: Boolean,
+    onGenerateContracts: () -> Unit,
+    onAcceptContract: (DeliveryContract) -> Unit,
+    onReleaseContract: (DeliveryContract) -> Unit,
+    onLaunchContract: (DeliveryContract) -> Unit,
     onLaunchRoute: (RouteSpec) -> Unit
 ) {
+    val freeRoamRoute = remember { RouteCatalog.byId("free_roam_world") }
+    var difficultyFilter by remember { mutableStateOf<ContractDifficulty?>(null) }
+
+    val allContracts = (contractsState as? UiState.Success)?.data ?: emptyList()
+    val activeContract = remember(allContracts, profile.activeContractId) {
+        allContracts.firstOrNull { it.status == ContractStatus.ACTIVE.name }
+            ?: allContracts.firstOrNull { it.id == profile.activeContractId && it.status != ContractStatus.COMPLETED.name }
+    }
+    val availableContracts = remember(allContracts, difficultyFilter) {
+        allContracts.filter { contract ->
+            contract.status == ContractStatus.AVAILABLE.name &&
+                (difficultyFilter == null || contract.resolvedDifficulty() == difficultyFilter)
+        }
+    }
+    val completedContractsCount = remember(allContracts) {
+        allContracts.count { it.status == ContractStatus.COMPLETED.name }
+    }
+
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -510,79 +656,268 @@ private fun RoutesDispatchTab(
     ) {
         item {
             Card(
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(containerColor = SteelSlate),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF121B27)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, GunmetalBorder, MaterialTheme.shapes.large)
+                    .border(1.5.dp, AmberDiesel.copy(alpha = 0.50f), RoundedCornerShape(20.dp))
             ) {
                 Column {
-                    Box(modifier = Modifier.fillMaxWidth().height(152.dp)) {
-                        Image(
-                            painter = painterResource(id = R.drawable.img_truck_hero),
-                            contentDescription = "Banner de despacho de rutas",
-                            contentScale = ContentScale.Crop,
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(194.dp)
+                    ) {
+                        Truck2DShowroomPreview(
+                            truck = activeTruck,
+                            visualConfig = visualConfig,
+                            showGarageStageBackdrop = true,
                             modifier = Modifier.fillMaxSize()
                         )
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(
-                                    Brush.horizontalGradient(
-                                        listOf(ObsidianNight.copy(alpha = 0.94f), ObsidianNight.copy(alpha = 0.42f))
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            ObsidianNight.copy(alpha = 0.80f),
+                                            Color.Transparent,
+                                            ObsidianNight.copy(alpha = 0.88f)
+                                        )
                                     )
                                 )
                         )
-                        Column(
+                        Row(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.SpaceBetween
+                                .align(Alignment.TopStart)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "TRACTOCAMIÓN ACTIVO • ${activeTruck.horsepower} HP",
+                                    text = "GARAJE PRINCIPAL • ${activeTruck.horsepower} HP",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = AmberDiesel
+                                    color = AmberDiesel,
+                                    fontWeight = FontWeight.Bold
                                 )
-                                Spacer(Modifier.height(3.dp))
                                 Text(
                                     text = activeTruck.name,
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    color = Color.White
-                                )
-                                Text(
-                                    text = "Control: ${profile.resolvedSteeringMode().label} • ${profile.resolvedCameraMode().label}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MutedSteel
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Surface(
+                                onClick = { onLaunchRoute(freeRoamRoute) },
+                                color = EmeraldCargo,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("btn_hero_freeroam")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(Icons.Filled.PlayArrow, contentDescription = "Iniciar mundo abierto", tint = ObsidianNight, modifier = Modifier.size(18.dp))
+                                    Text("RUTA LIBRE", style = MaterialTheme.typography.labelSmall, color = ObsidianNight, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 MiniStatBadge("${profile.deliveriesCompleted} Entregas")
+                                MiniStatBadge("${profile.contractsCompleted} Contratos")
                                 MiniStatBadge("${profile.totalDistanceKm.toInt()} km")
                                 if (profile.truckDamagePercent > 0L) {
                                     MiniStatBadge("Daño ${profile.truckDamagePercent}%")
                                 }
                             }
+                            Text(
+                                text = "${profile.resolvedSteeringMode().label.split(" ").first()} • ${profile.resolvedCameraMode().label}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFD6E2F0)
+                            )
                         }
                     }
-                    Truck2DShowroomPreview(
-                        truck = activeTruck,
-                        visualConfig = visualConfig,
+                }
+            }
+        }
+
+        // Random Delivery Contracts Section (Firestore-persisted)
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Filled.Assignment, contentDescription = null, tint = AmberDiesel, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = "CONTRATOS DE ENTREGA ALEATORIOS",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = AmberDiesel
+                            )
+                        }
+                        Text(
+                            text = "Trabajos dinámicos guardados en tu perfil Firestore${if (completedContractsCount > 0) " • $completedContractsCount recientes cerrados" else ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MutedSteel
+                        )
+                    }
+                    Button(
+                        onClick = onGenerateContracts,
+                        enabled = !isBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = CobaltBeacon, contentColor = Color.White),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("btn_generate_contracts")
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("GENERAR", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    item {
+                        DifficultyFilterChip(
+                            label = "Todas",
+                            selected = difficultyFilter == null,
+                            accent = AmberDiesel,
+                            onClick = { difficultyFilter = null }
+                        )
+                    }
+                    items(ContractDifficulty.entries) { diff ->
+                        val accent = difficultyAccentColor(diff)
+                        DifficultyFilterChip(
+                            label = diff.label,
+                            selected = difficultyFilter == diff,
+                            accent = accent,
+                            onClick = {
+                                difficultyFilter = if (difficultyFilter == diff) null else diff
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (activeContract != null) {
+            item(key = "active_${activeContract.id}") {
+                DeliveryContractCard(
+                    contract = activeContract,
+                    driverLevel = profile.effectiveLevel(),
+                    isActive = true,
+                    isBusy = isBusy,
+                    onAccept = { },
+                    onRelease = { onReleaseContract(activeContract) },
+                    onDrive = { onLaunchContract(activeContract) }
+                )
+            }
+        }
+
+        when (contractsState) {
+            is UiState.Loading -> {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = SteelSlate),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(92.dp)
+                            .border(1.dp, GunmetalBorder, MaterialTheme.shapes.medium)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(18.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(color = AmberDiesel, modifier = Modifier.size(22.dp))
+                            Text("Cargando tablero de contratos desde Firestore…", color = MutedSteel, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+            is UiState.Error -> {
+                item {
+                    Text(
+                        text = contractsState.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CrimsonBrake
                     )
+                }
+            }
+            is UiState.Success -> {
+                if (availableContracts.isEmpty()) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = SteelSlate),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, GunmetalBorder, MaterialTheme.shapes.medium)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = if (difficultyFilter == null) {
+                                        "No hay contratos disponibles. Genera nuevos trabajos aleatorios."
+                                    } else {
+                                        "No hay contratos de dificultad ${difficultyFilter?.label}. Prueba otra o genera nuevos."
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MutedSteel
+                                )
+                                Button(
+                                    onClick = onGenerateContracts,
+                                    enabled = !isBusy,
+                                    colors = ButtonDefaults.buttonColors(containerColor = AmberDiesel, contentColor = ObsidianNight),
+                                    modifier = Modifier.height(48.dp)
+                                ) {
+                                    Text("GENERAR CONTRATOS ALEATORIOS", style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(availableContracts, key = { it.id }) { contract ->
+                        DeliveryContractCard(
+                            contract = contract,
+                            driverLevel = profile.effectiveLevel(),
+                            isActive = false,
+                            isBusy = isBusy,
+                            onAccept = { onAcceptContract(contract) },
+                            onRelease = { },
+                            onDrive = { onLaunchContract(contract) }
+                        )
+                    }
                 }
             }
         }
 
         item {
             Text(
-                text = "MUNDO ABIERTO Y CONTRATOS DE CARGA",
+                text = "MUNDO ABIERTO Y RUTAS ESTÁNDAR",
                 style = MaterialTheme.typography.labelLarge,
                 color = MutedSteel,
-                modifier = Modifier.padding(top = 4.dp)
+                modifier = Modifier.padding(top = 6.dp)
             )
         }
 
@@ -592,15 +927,233 @@ private fun RoutesDispatchTab(
     }
 }
 
+private fun difficultyAccentColor(difficulty: ContractDifficulty): Color = when (difficulty) {
+    ContractDifficulty.FACIL -> EmeraldCargo
+    ContractDifficulty.MEDIA -> CobaltBeacon
+    ContractDifficulty.ALTA -> AmberDiesel
+    ContractDifficulty.EXTREMA -> CrimsonBrake
+}
+
+@Composable
+private fun DifficultyFilterChip(
+    label: String,
+    selected: Boolean,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = if (selected) accent.copy(alpha = 0.22f) else SteelSlate,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .height(48.dp)
+            .border(
+                width = 1.dp,
+                color = if (selected) accent else GunmetalBorder,
+                shape = RoundedCornerShape(10.dp)
+            )
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) accent else MutedSteel
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DeliveryContractCard(
+    contract: DeliveryContract,
+    driverLevel: Long,
+    isActive: Boolean,
+    isBusy: Boolean,
+    onAccept: () -> Unit,
+    onRelease: () -> Unit,
+    onDrive: () -> Unit
+) {
+    val diff = contract.resolvedDifficulty()
+    val diffColor = difficultyAccentColor(diff)
+    val levelMet = driverLevel >= contract.requiredLevel
+    val trailer = contract.resolvedTrailerType()
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = if (isActive) Color(0xFF162436) else SteelSlate),
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = if (isActive) 1.6.dp else 1.dp,
+                color = if (isActive) AmberDiesel else diffColor.copy(alpha = 0.55f),
+                shape = MaterialTheme.shapes.medium
+            )
+            .testTag("contract_card_${contract.id}")
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        color = diffColor.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.border(1.dp, diffColor, RoundedCornerShape(8.dp))
+                    ) {
+                        Text(
+                            text = if (isActive) "CONTRATO ACTIVO • ${diff.label.uppercase()}" else "DIFICULTAD ${diff.label.uppercase()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = diffColor,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    if (!levelMet) {
+                        Surface(
+                            color = CrimsonBrake.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Filled.Lock, contentDescription = null, tint = CrimsonBrake, modifier = Modifier.size(12.dp))
+                                Text(
+                                    text = "Nv. ${contract.requiredLevel}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CrimsonBrake,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Surface(
+                    color = GoldTrophy.copy(alpha = 0.18f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.border(1.dp, GoldTrophy.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                ) {
+                    Text(
+                        text = "+$${contract.rewardCredits}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = GoldTrophy,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = "${contract.companyName} • ${contract.originCity} → ${contract.destinationCity}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CobaltBeacon
+                )
+                Text(
+                    text = contract.cargoName,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                MiniStatBadge("${contract.distanceKm.toInt()} km")
+                MiniStatBadge("${contract.cargoTons}t")
+                MiniStatBadge(trailer.label)
+                MiniStatBadge("+${contract.rewardXp} XP")
+                MiniStatBadge("Bono 0% daño +$${contract.bonusPerfectCredits}")
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (isActive) {
+                    OutlinedButton(
+                        onClick = onRelease,
+                        enabled = !isBusy,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CrimsonBrake),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("btn_release_contract")
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("LIBERAR", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Button(
+                        onClick = onDrive,
+                        enabled = !isBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldCargo, contentColor = ObsidianNight),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("btn_drive_active_contract")
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("CONDUCIR CONTRATO", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onAccept,
+                        enabled = !isBusy && levelMet,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberDiesel),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("btn_accept_contract_${contract.id}")
+                    ) {
+                        Text(if (levelMet) "ACEPTAR" else "NV. ${contract.requiredLevel}", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Button(
+                        onClick = onDrive,
+                        enabled = !isBusy && levelMet,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (levelMet) AmberDiesel else CabMetal,
+                            contentColor = ObsidianNight
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("btn_drive_contract_${contract.id}")
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (levelMet) "ACEPTAR Y CONDUCIR" else "REQUIERE NIVEL ${contract.requiredLevel}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun RouteCard(route: RouteSpec, onLaunch: () -> Unit) {
-    val routePhotoRes = when (route.environment) {
-        EnvironmentTheme.DESERT_NIGHT -> R.drawable.img_real_highway_night
-        EnvironmentTheme.COASTAL_SUNSET, EnvironmentTheme.OPEN_VALLEY -> R.drawable.img_truck_hero
-        EnvironmentTheme.ALPINE_DAY, EnvironmentTheme.STORM_SUMMIT -> R.drawable.img_real_highway_alpine
+    val routePhotoRes = when {
+        route.isFreeRoam || route.trailerType == CargoTrailerType.CAR_CARRIER -> R.drawable.img_real_truck_fleet
+        route.environment == EnvironmentTheme.DESERT_NIGHT -> R.drawable.img_real_highway_night
+        route.environment == EnvironmentTheme.COASTAL_SUNSET || route.environment == EnvironmentTheme.OPEN_VALLEY -> R.drawable.img_truck_hero
+        else -> R.drawable.img_real_highway_alpine
     }
     Card(
-        colors = CardDefaults.cardColors(containerColor = SteelSlate),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF121B27)),
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
             .fillMaxWidth()
@@ -819,11 +1372,11 @@ private fun GarageFleetTab(
         // 1. BUSSID-style Interactive Workshop & Customization Studio
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF121B27)),
+                shape = RoundedCornerShape(20.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.5.dp, AmberDiesel.copy(alpha = 0.65f), MaterialTheme.shapes.large)
+                    .border(1.5.dp, AmberDiesel.copy(alpha = 0.65f), RoundedCornerShape(20.dp))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
@@ -835,12 +1388,14 @@ private fun GarageFleetTab(
                             Text(
                                 text = "TALLER DE PERSONALIZACIÓN 2D",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = AmberDiesel
+                                color = AmberDiesel,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = activeTruck.name,
                                 style = MaterialTheme.typography.titleLarge,
-                                color = Color.White
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                         if (profile.truckDamagePercent > 0L) {
@@ -863,15 +1418,30 @@ private fun GarageFleetTab(
                         }
                     }
 
-                    Truck2DShowroomPreview(
-                        truck = activeTruck,
-                        visualConfig = previewVisualConfig,
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(132.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
-                    )
+                            .height(182.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(1.2.dp, AmberDiesel.copy(alpha = 0.38f), RoundedCornerShape(16.dp))
+                    ) {
+                        Truck2DShowroomPreview(
+                            truck = activeTruck,
+                            visualConfig = previewVisualConfig,
+                            showGarageStageBackdrop = true,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            MiniStatBadge("${activeTruck.horsepower} HP")
+                            MiniStatBadge("Máx ${activeTruck.maxSpeedKmh} km/h")
+                            MiniStatBadge(activeTruck.defaultTrailerType.label)
+                        }
+                    }
 
                     Text("Pintura de Cabina", style = MaterialTheme.typography.labelLarge, color = Color.White)
                     FlowRow(
@@ -1021,134 +1591,161 @@ private fun GarageFleetTab(
             }
         }
 
+        // 2. BUSSID-style Horizontal Showroom Fleet Carousel
         item {
-            Text(
-                text = "CONCESIONARIO • 8 TRACTOCAMIONES",
-                style = MaterialTheme.typography.labelLarge,
-                color = MutedSteel
-            )
-        }
-
-        items(TruckCatalog.trucks, key = { it.id }) { truck ->
-            val owned = truck.id in profile.unlockedTruckIds
-            val equipped = truck.id == profile.selectedTruckId
-            val canAfford = profile.credits >= truck.priceCredits
-            val swatch = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
-            val truckVisual = if (equipped) {
-                previewVisualConfig
-            } else {
-                TruckVisualConfig(
-                    paintHex = truck.defaultPaintHex,
-                    liveryStyle = LiveryStyle.CLASSIC,
-                    trailerType = truck.defaultTrailerType
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "CONCESIONARIO • 8 TRACTOCAMIONES",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MutedSteel
+                )
+                Text(
+                    text = "Desliza →",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AmberDiesel
                 )
             }
+        }
 
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = if (equipped) 1.5.dp else 1.dp,
-                        color = if (equipped) AmberDiesel else GunmetalBorder,
-                        shape = MaterialTheme.shapes.medium
-                    )
+        item {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(vertical = 2.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Truck2DShowroomPreview(
-                        truck = truck,
-                        visualConfig = truckVisual,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(114.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(swatch)
-                                    .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.LocalShipping,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = truck.name,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = Color.White
-                                )
-                                Text(
-                                    text = truck.subtitle,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MutedSteel
-                                )
-                            }
-                        }
+                items(TruckCatalog.trucks, key = { it.id }) { truck ->
+                    val owned = truck.id in profile.unlockedTruckIds
+                    val equipped = truck.id == profile.selectedTruckId
+                    val canAfford = profile.credits >= truck.priceCredits
+                    val swatch = Color(truck.primaryColorRgb[0], truck.primaryColorRgb[1], truck.primaryColorRgb[2])
+                    val truckVisual = if (equipped) {
+                        previewVisualConfig
+                    } else {
+                        TruckVisualConfig(
+                            paintHex = truck.defaultPaintHex,
+                            liveryStyle = LiveryStyle.CLASSIC,
+                            trailerType = truck.defaultTrailerType
+                        )
+                    }
 
-                        if (equipped) {
-                            Surface(
-                                color = EmeraldCargo.copy(alpha = 0.2f),
-                                shape = CircleShape,
-                                modifier = Modifier.border(1.dp, EmeraldCargo, CircleShape)
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF121B27)),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier
+                            .width(304.dp)
+                            .border(
+                                width = if (equipped) 1.8.dp else 1.dp,
+                                color = if (equipped) AmberDiesel else GunmetalBorder,
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(124.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = EmeraldCargo, modifier = Modifier.size(14.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("ACTIVO", style = MaterialTheme.typography.labelSmall, color = EmeraldCargo)
+                                Truck2DShowroomPreview(
+                                    truck = truck,
+                                    visualConfig = truckVisual,
+                                    showGarageStageBackdrop = true,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (equipped) {
+                                    Surface(
+                                        color = EmeraldCargo,
+                                        shape = CircleShape,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = ObsidianNight, modifier = Modifier.size(13.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("ACTIVO", style = MaterialTheme.typography.labelSmall, color = ObsidianNight, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
                                 }
                             }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(swatch)
+                                        .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LocalShipping,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = truck.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = truck.subtitle,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MutedSteel,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                MiniStatBadge(truck.roleTag)
+                                MiniStatBadge("${truck.horsepower} HP")
+                                MiniStatBadge("${truck.maxSpeedKmh} km/h")
+                            }
+
+                            SpecBar("Potencia", (truck.horsepower / 850f).coerceIn(0f, 1f), AmberDiesel)
+                            SpecBar("Frenado y Retarder", (truck.brakingPower / 1.35f).coerceIn(0f, 1f), CobaltBeacon)
+
+                            Button(
+                                onClick = { onSelectOrPurchase(truck) },
+                                enabled = !equipped && !isBusy && (owned || canAfford),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (owned) CobaltBeacon else AmberDiesel,
+                                    contentColor = ObsidianNight
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("btn_truck_${truck.id}")
+                            ) {
+                                Text(
+                                    text = when {
+                                        equipped -> "CAMIÓN EQUIPADO"
+                                        owned -> "EQUIPAR CAMIÓN"
+                                        canAfford -> "COMPRAR POR $${truck.priceCredits}"
+                                        else -> "REQUIERE $${truck.priceCredits}"
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MiniStatBadge(truck.roleTag)
-                        MiniStatBadge("${truck.horsepower} HP")
-                        MiniStatBadge("Máx ${truck.maxSpeedKmh} km/h")
-                    }
-
-                    SpecBar("Potencia", (truck.horsepower / 850f).coerceIn(0f, 1f), AmberDiesel)
-                    SpecBar("Frenado y Retarder", (truck.brakingPower / 1.35f).coerceIn(0f, 1f), CobaltBeacon)
-
-                    Button(
-                        onClick = { onSelectOrPurchase(truck) },
-                        enabled = !equipped && !isBusy && (owned || canAfford),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (owned) CobaltBeacon else AmberDiesel,
-                            contentColor = ObsidianNight
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("btn_truck_${truck.id}")
-                    ) {
-                        Text(
-                            text = when {
-                                equipped -> "CAMIÓN EQUIPADO"
-                                owned -> "EQUIPAR CAMIÓN"
-                                canAfford -> "COMPRAR POR $${truck.priceCredits}"
-                                else -> "REQUIERE $${truck.priceCredits}"
-                            },
-                            style = MaterialTheme.typography.labelLarge
-                        )
                     }
                 }
             }
@@ -1628,217 +2225,6 @@ private fun ConvoyMultiplayerTab(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CareerAndControlsTab(
-    profile: DriverProfile,
-    deliveriesState: UiState<List<DeliveryRecord>>,
-    isBusy: Boolean,
-    onSaveSettings: (SteeringMode, Double, CameraMode, String) -> Unit
-) {
-    var steeringMode by remember(profile.steeringMode) { mutableStateOf(profile.resolvedSteeringMode()) }
-    var sensitivity by remember(profile.steeringSensitivity) { mutableFloatStateOf(profile.steeringSensitivity.toFloat()) }
-    var cameraMode by remember(profile.cameraMode) { mutableStateOf(profile.resolvedCameraMode()) }
-    var driverName by remember(profile.driverName) { mutableStateOf(profile.driverName) }
-
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, GunmetalBorder, MaterialTheme.shapes.medium)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Build, contentDescription = null, tint = AmberDiesel)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "CALIBRACIÓN DE CONTROLES PRECISOS",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = driverName,
-                        onValueChange = { if (it.length <= 40) driverName = it },
-                        label = { Text("Nombre en Licencia") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Text("Sistema de Dirección", style = MaterialTheme.typography.labelLarge, color = AmberDiesel)
-                    SteeringMode.entries.forEach { mode ->
-                        val selected = mode == steeringMode
-                        Surface(
-                            onClick = { steeringMode = mode },
-                            color = if (selected) AmberDiesel.copy(alpha = 0.16f) else CabMetal,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    1.dp,
-                                    if (selected) AmberDiesel else GunmetalBorder,
-                                    RoundedCornerShape(12.dp)
-                                )
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = mode.label,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = if (selected) AmberDiesel else Color.White
-                                )
-                                Text(
-                                    text = mode.description,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MutedSteel
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = "Sensibilidad de Dirección: ${"%.2f".format(sensitivity)}x",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White
-                    )
-                    Slider(
-                        value = sensitivity,
-                        onValueChange = { sensitivity = it },
-                        valueRange = 0.4f..2.0f,
-                        colors = SliderDefaults.colors(thumbColor = AmberDiesel, activeTrackColor = AmberDiesel)
-                    )
-
-                    Text("Perspectiva 2D Inicial (4 Cámaras)", style = MaterialTheme.typography.labelLarge, color = CobaltBeacon)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        CameraMode.entries.forEach { cam ->
-                            val selected = cam == cameraMode
-                            OutlinedButton(
-                                onClick = { cameraMode = cam },
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (selected) CobaltBeacon.copy(alpha = 0.22f) else CabMetal,
-                                    contentColor = if (selected) CobaltBeacon else Color.White
-                                ),
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text(cam.label, style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                    }
-
-                    Button(
-                        onClick = { onSaveSettings(steeringMode, sensitivity.toDouble(), cameraMode, driverName) },
-                        enabled = !isBusy,
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberDiesel, contentColor = ObsidianNight),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("btn_save_controls")
-                    ) {
-                        Text("GUARDAR CALIBRACIÓN", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-        }
-
-        item {
-            Text(
-                text = "BITÁCORA DE ENTREGAS RECIENTES",
-                style = MaterialTheme.typography.labelLarge,
-                color = MutedSteel
-            )
-        }
-
-        when (deliveriesState) {
-            is UiState.Loading -> {
-                item {
-                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = AmberDiesel)
-                    }
-                }
-            }
-            is UiState.Error -> {
-                item {
-                    Text(
-                        text = deliveriesState.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = CrimsonBrake
-                    )
-                }
-            }
-            is UiState.Success -> {
-                if (deliveriesState.data.isEmpty()) {
-                    item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                            modifier = Modifier.fillMaxWidth().border(1.dp, GunmetalBorder, MaterialTheme.shapes.medium)
-                        ) {
-                            Text(
-                                text = "Aún no has completado entregas. Inicia tu primera ruta desde Despacho.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MutedSteel,
-                                modifier = Modifier.padding(18.dp)
-                            )
-                        }
-                    }
-                } else {
-                    items(deliveriesState.data, key = { it.id }) { rec ->
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = SteelSlate),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(1.dp, GunmetalBorder, MaterialTheme.shapes.small)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = rec.routeName,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color.White
-                                    )
-                                    Text(
-                                        text = "${rec.cargoName} • ${rec.durationSeconds}s • Daño ${rec.damagePercent}%",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MutedSteel
-                                    )
-                                }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(
-                                        text = "+$${rec.earnedCredits}",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = GoldTrophy,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (rec.perfectDelivery) {
-                                        Text(
-                                            text = "SIN DAÑOS",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = EmeraldCargo
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun MiniStatBadge(text: String) {

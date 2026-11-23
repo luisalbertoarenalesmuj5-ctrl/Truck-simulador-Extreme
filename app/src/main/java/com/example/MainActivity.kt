@@ -19,6 +19,7 @@ import com.example.data.CareerRepository
 import com.example.data.ConvoyRepository
 import com.example.data.authStateFlow
 import com.example.model.CameraMode
+import com.example.model.DeliveryContract
 import com.example.model.RouteSpec
 import com.example.model.SteeringMode
 import com.example.model.TruckSpec
@@ -43,7 +44,8 @@ private data class ActiveDriveSession(
     val cameraMode: CameraMode,
     val visualConfig: TruckVisualConfig,
     val initialDamagePercent: Int,
-    val activeConvoyRoomId: String?
+    val activeConvoyRoomId: String?,
+    val activeContract: DeliveryContract? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -112,7 +114,7 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
                 HubScreen(
                     viewModel = viewModel,
                     convoyViewModel = convoyViewModel,
-                    onStartDrive = { truck, route, steerMode, sens, camMode, visualConfig, dmg, convoyRoomId ->
+                    onStartDrive = { truck, route, steerMode, sens, camMode, visualConfig, dmg, convoyRoomId, contract ->
                         activeSession = ActiveDriveSession(
                             truck = truck,
                             route = route,
@@ -121,7 +123,8 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
                             cameraMode = camMode,
                             visualConfig = visualConfig,
                             initialDamagePercent = dmg,
-                            activeConvoyRoomId = convoyRoomId
+                            activeConvoyRoomId = convoyRoomId,
+                            activeContract = contract
                         )
                     }
                 )
@@ -145,7 +148,8 @@ fun AppRootNavigation(auth: FirebaseAuth = Firebase.auth) {
                             route = session.route,
                             truckId = session.truck.id,
                             damagePercent = damage,
-                            durationSeconds = duration
+                            durationSeconds = duration,
+                            activeContract = session.activeContract
                         )
                     },
                     onExitToHub = { activeSession = null }

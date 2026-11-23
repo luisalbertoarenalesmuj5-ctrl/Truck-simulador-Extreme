@@ -1,5 +1,6 @@
 package com.example.sim
 
+import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
@@ -27,8 +28,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import com.example.R
 import com.example.model.CameraMode
 import com.example.model.EnvironmentTheme
 import com.example.model.RouteSpec
@@ -36,9 +39,11 @@ import com.example.model.TruckCatalog
 import com.example.model.TruckSpec
 import com.example.model.TruckVisualConfig
 import com.example.sim.Truck2DArtwork.drawConvoyTag2D
+import com.example.sim.Truck2DArtwork.drawDriverOnFoot2DChase
 import com.example.sim.Truck2DArtwork.drawDriverOnFoot2DSide
 import com.example.sim.Truck2DArtwork.drawTrafficVehicle2DRearFront
 import com.example.sim.Truck2DArtwork.drawTrafficVehicle2DSide
+import com.example.sim.Truck2DArtwork.drawTruckRig2DRearChase
 import com.example.sim.Truck2DArtwork.drawTruckRig2DSide
 import com.example.sim.Truck2DArtwork.drawTruckRig2DTopDown
 import kotlin.math.PI
@@ -122,9 +127,13 @@ fun Truck2DViewport(
     paused: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val snapshot = remember(physics) { RenderSnapshot() }
     var frameTick by remember { mutableLongStateOf(0L) }
     val drawCache = remember { ViewportDrawCache(createAsphaltTextureTile()) }
+    val driverWalkBitmap = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.img_real_driver_walk)?.asImageBitmap()
+    }
 
     val stars = remember {
         val rng = Random(2025)
@@ -168,7 +177,7 @@ fun Truck2DViewport(
 
         when (cameraMode) {
             CameraMode.EXTERIOR_2D -> {
-                drawSide2DWorld(
+                drawChase2DPerspectiveWorld(
                     snapshot = snapshot,
                     physics = physics,
                     truck = truck,
@@ -179,7 +188,7 @@ fun Truck2DViewport(
                     sunsetFactor = sunsetFactor,
                     stars = stars,
                     rainSeeds = rainSeeds,
-                    closeUpSide = false
+                    driverSprite = driverWalkBitmap
                 )
             }
             CameraMode.SIDE_2D -> {
@@ -194,7 +203,8 @@ fun Truck2DViewport(
                     sunsetFactor = sunsetFactor,
                     stars = stars,
                     rainSeeds = rainSeeds,
-                    closeUpSide = true
+                    closeUpSide = true,
+                    driverSprite = driverWalkBitmap
                 )
             }
             CameraMode.FRONT_2D -> {
@@ -225,6 +235,650 @@ fun Truck2DViewport(
     }
 }
 
+private data class PerspectiveTrafficDraw(
+    val ds: Float,
+    val isConvoy: Boolean,
+    val traffic: TrafficVehicle? = null,
+    val convoy: com.example.model.ConvoyPlayer? = null
+)
+
+/**
+ * Iconic BUSSID-Caliber 2D Chase Perspective View:
+ * Looks down a curving receding multi-lane 2D highway with lush tropical palms / alpine pines,
+ * tire-wear asphalt tracks, curve chevrons, toll plazas, fuel stations, zebra crosswalks,
+ * depth-sorted 3/4 traffic, and a 3/4 elevated 2D truck+trailer rig in the foreground.
+ */
+private fun DrawScope.drawChase2DPerspectiveWorld(
+    snapshot: RenderSnapshot,
+    physics: TruckPhysicsEngine,
+    truck: TruckSpec,
+    route: RouteSpec,
+    visualConfig: TruckVisualConfig,
+    cache: ViewportDrawCache,
+    nightFactor: Float,
+    sunsetFactor: Float,
+    stars: List<StarSeed>,
+    rainSeeds: List<RainDropSeed>,
+    driverSprite: ImageBitmap?
+) {
+    val w = size.width
+    val h = size.height
+    val env = route.environment
+    val horizonY = h * 0.40f
+    val cameraS = if (snapshot.driverOnFoot) snapshot.driverRoadS else snapshot.roadProgressMeters
+    val activeLane = if (snapshot.driverOnFoot) snapshot.driverLaneOffset else snapshot.laneOffset
+
+    // 1. Dynamic Atmospheric Sky + Sun/Moon + Stars + Volumetric Horizon Haze
+    drawDynamicSky2D(
+        w = w,
+        horizonY = horizonY + h * 0.04f,
+        env = env,
+        timeOfDay = snapshot.timeOfDay,
+        nightFactor = nightFactor,
+        sunsetFactor = sunsetFactor,
+        simClock = snapshot.simClock,
+        cameraS = cameraS * 0.35f,
+        stars = stars
+    )
+
+    // Multi-layered distant mountains & subtle volcano/ridge silhouettes
+    drawParallaxMountains(w, horizonY, cameraS * 0.30f + activeLane * 4f, env, nightFactor, sunsetFactor, 0.22f, h * 0.14f, 0, cache)
+    drawParallaxMountains(w, horizonY + 4f, cameraS * 0.45f + activeLane * 6f, env, nightFactor, sunsetFactor, 0.34f, h * 0.08f, 1, cache)
+
+    // Horizon atmospheric depth glow band
+    val hazeColor = lerpColor(
+        lerpColor(Color(0xFFA7D3F2), Color(0xFFF5A97F), sunsetFactor),
+        Color(0xFF1A2942),
+        nightFactor
+    ).copy(alpha = 0.38f)
+    drawRect(
+        brush = Brush.verticalGradient(listOf(Color.Transparent, hazeColor, Color.Transparent), startY = horizonY - h * 0.07f, endY = horizonY + h * 0.07f),
+        topLeft = Offset(0f, horizonY - h * 0.07f),
+        size = Size(w, h * 0.14f)
+    )
+
+    // 2. Terrain Ground Plane (Lush tropical/alpine or desert)
+    val groundTop = lerpColor(
+        if (env == EnvironmentTheme.DESERT_NIGHT) Color(0xFF6B4C35) else Color(0xFF39612E),
+        Color(0xFF0D1411),
+        nightFactor * 0.85f
+    )
+    val groundBot = lerpColor(
+        if (env == EnvironmentTheme.DESERT_NIGHT) Color(0xFF422E20) else Color(0xFF213C1B),
+        Color(0xFF070A09),
+        nightFactor * 0.85f
+    )
+    drawRect(
+        brush = Brush.verticalGradient(listOf(groundTop, groundBot), startY = horizonY, endY = h),
+        topLeft = Offset(0f, horizonY),
+        size = Size(w, h - horizonY)
+    )
+
+    // River water check if on or approaching Bridge
+    val nearBridge = physics.landmarks.firstOrNull { it.kind == LandmarkKind.BRIDGE && (it.s - cameraS) in -20f..170f }
+    if (nearBridge != null) {
+        val ds = (nearBridge.s - cameraS).coerceAtLeast(0f)
+        val depth = (1f - ds / 170f).coerceIn(0f, 1f)
+        val p = depth * depth
+        val ry = horizonY + (h - horizonY) * p
+        drawRect(
+            brush = Brush.verticalGradient(listOf(Color(0xFF1E4E79), Color(0xFF0F2D4A))),
+            topLeft = Offset(0f, ry - 18f - p * 38f),
+            size = Size(w, 36f + p * 76f)
+        )
+    }
+
+    // 3. Curved Perspective 2D Highway Ribbon (sampled smoothly across 18 slices)
+    val lookCurvature = physics.road.sampleAtDistance(cameraS + 55f).curvature
+    val nearCurvature = physics.road.sampleAtDistance(cameraS + 16f).curvature
+    val blendedCurve = lookCurvature * 0.65f + nearCurvature * 0.35f
+    val laneShiftNorm = (activeLane / 5.4f).coerceIn(-1.1f, 1.1f)
+
+    val topCenterX = w * 0.5f + blendedCurve * w * 22f - laneShiftNorm * w * 0.08f
+    val botCenterX = w * 0.5f - laneShiftNorm * w * 0.24f
+    val topHalfW = w * 0.042f
+    val botHalfW = w * 0.62f
+
+    fun perspectivePos(p: Float): Pair<Float, Float> {
+        val y = horizonY + (h - horizonY) * p
+        val curveSwing = blendedCurve * w * 22f * (1f - p) * (1f - p)
+        val cx = w * 0.5f + curveSwing - laneShiftNorm * w * (0.08f + p * 0.16f)
+        val halfW = topHalfW + (botHalfW - topHalfW) * p
+        return cx to halfW
+    }
+
+    val slices = 16
+    val roadPoly = cache.roadRibbonPath
+    roadPoly.reset()
+    for (i in 0..slices) {
+        val t = i / slices.toFloat()
+        val p = t * t
+        val y = horizonY + (h - horizonY) * p
+        val (cx, hw) = perspectivePos(p)
+        if (i == 0) roadPoly.moveTo(cx - hw, y) else roadPoly.lineTo(cx - hw, y)
+    }
+    for (i in slices downTo 0) {
+        val t = i / slices.toFloat()
+        val p = t * t
+        val y = horizonY + (h - horizonY) * p
+        val (cx, hw) = perspectivePos(p)
+        roadPoly.lineTo(cx + hw, y)
+    }
+    roadPoly.close()
+
+    val asphTop = lerpColor(Color(0xFF424A56), Color(0xFF191E26), nightFactor * 0.72f)
+    val asphBot = lerpColor(Color(0xFF1F242C), Color(0xFF0C1015), nightFactor * 0.72f)
+    drawPath(
+        path = roadPoly,
+        brush = Brush.verticalGradient(listOf(asphTop, asphBot), startY = horizonY, endY = h)
+    )
+
+    // Subtle rain-wet highway sheen reflection
+    if (snapshot.rainIntensity > 0.08f) {
+        drawPath(
+            path = roadPoly,
+            brush = Brush.verticalGradient(
+                listOf(Color(0xFF93C5FD).copy(alpha = snapshot.rainIntensity * 0.16f), Color.Transparent),
+                startY = horizonY,
+                endY = h
+            )
+        )
+    }
+
+    // Highway Tire-Wear Wheel Tracks + Shoulder Rumble Curbs + Guardrails
+    val dashOffset = ((cameraS * 0.085f) % 1f + 1f) % 1f
+    val trackDark = Color(0x2805070A)
+    for (i in 0 until slices) {
+        val t0 = i / slices.toFloat()
+        val t1 = (i + 1) / slices.toFloat()
+        val p0 = t0 * t0
+        val p1 = t1 * t1
+        val y0 = horizonY + (h - horizonY) * p0
+        val y1 = horizonY + (h - horizonY) * p1
+        val (cx0, hw0) = perspectivePos(p0)
+        val (cx1, hw1) = perspectivePos(p1)
+
+        // Subtle asphalt tire wear tracks along left & right carriageways
+        for (laneF in floatArrayOf(-0.62f, -0.30f, 0.30f, 0.62f)) {
+            drawLine(trackDark, Offset(cx0 + hw0 * laneF, y0), Offset(cx1 + hw1 * laneF, y1), strokeWidth = 2f + p1 * 18f)
+        }
+
+        // Edge white markings & outer gravel shoulder rim
+        drawLine(Color(0xFF334155), Offset(cx0 - hw0 * 0.99f, y0), Offset(cx1 - hw1 * 0.99f, y1), strokeWidth = 2f + p1 * 8f)
+        drawLine(Color(0xFF334155), Offset(cx0 + hw0 * 0.99f, y0), Offset(cx1 + hw1 * 0.99f, y1), strokeWidth = 2f + p1 * 8f)
+        drawLine(Color(0xFFE2E8F0), Offset(cx0 - hw0 * 0.90f, y0), Offset(cx1 - hw1 * 0.90f, y1), strokeWidth = 1.5f + p1 * 5.5f)
+        drawLine(Color(0xFFE2E8F0), Offset(cx0 + hw0 * 0.90f, y0), Offset(cx1 + hw1 * 0.90f, y1), strokeWidth = 1.5f + p1 * 5.5f)
+
+        // Metallic side W-beam guardrails
+        val railCol = lerpColor(Color(0xFF94A3B8), Color(0xFF334155), nightFactor * 0.75f)
+        val railH0 = 4f + p0 * 24f
+        val railH1 = 4f + p1 * 24f
+        drawLine(railCol, Offset(cx0 - hw0 * 1.03f, y0 - railH0), Offset(cx1 - hw1 * 1.03f, y1 - railH1), strokeWidth = 2f + p1 * 5f)
+        drawLine(railCol, Offset(cx0 + hw0 * 1.03f, y0 - railH0), Offset(cx1 + hw1 * 1.03f, y1 - railH1), strokeWidth = 2f + p1 * 5f)
+    }
+
+    // Moving dashed lane lines + tropical palms / layered pines + curve chevrons + highway lamps (far -> near)
+    val usePalms = env == EnvironmentTheme.COASTAL_SUNSET || env == EnvironmentTheme.OPEN_VALLEY || route.isFreeRoam
+    val stepMeters = 14f
+    val maxLookAhead = 196f
+    val firstPost = ((cameraS / stepMeters).toInt() * stepMeters)
+    val postCount = (maxLookAhead / stepMeters).toInt()
+    for (k in postCount downTo 0) {
+        val sObj = firstPost + k * stepMeters
+        val ds = sObj - cameraS
+        if (ds < 1f || ds > maxLookAhead) continue
+        val depth = (1f - ds / maxLookAhead).coerceIn(0f, 1f)
+        val p = depth * depth
+        val y = horizonY + (h - horizonY) * p
+        val (cx, hw) = perspectivePos(p)
+
+        // Guardrail posts
+        drawLine(Color(0xFF475569), Offset(cx - hw * 1.03f, y), Offset(cx - hw * 1.03f, y - (5f + p * 26f)), strokeWidth = 1.5f + p * 3f)
+        drawLine(Color(0xFF475569), Offset(cx + hw * 1.03f, y), Offset(cx + hw * 1.03f, y - (5f + p * 26f)), strokeWidth = 1.5f + p * 3f)
+
+        val idx = (sObj / stepMeters).toInt()
+
+        // Curve Warning Chevron Boards on outside shoulder of sharper bends
+        if (abs(blendedCurve) > 0.0045f && idx % 2 == 0 && p > 0.06f) {
+            val outsideSide = if (blendedCurve > 0f) -1f else 1f
+            val chevX = cx + outsideSide * (hw * 1.10f)
+            val chevH = 12f + p * 38f
+            val chevW = 8f + p * 22f
+            drawLine(Color(0xFF475569), Offset(chevX, y), Offset(chevX, y - chevH), strokeWidth = 1.5f + p * 2.5f)
+            drawRoundRect(
+                color = Color(0xFFF59E0B),
+                topLeft = Offset(chevX - chevW * 0.5f, y - chevH - chevW * 0.7f),
+                size = Size(chevW, chevW * 0.72f),
+                cornerRadius = CornerRadius(2f, 2f)
+            )
+            drawRoundRect(
+                color = Color(0xFF111827),
+                topLeft = Offset(chevX - chevW * 0.28f, y - chevH - chevW * 0.55f),
+                size = Size(chevW * 0.56f, chevW * 0.42f),
+                cornerRadius = CornerRadius(1.5f, 1.5f)
+            )
+        }
+
+        // Authentic Roadside Foliage: Tropical Coconut Palms / Multi-Tiered Alpine Conifers / Desert Saguaro
+        for (side in floatArrayOf(-1f, 1f)) {
+            if ((idx + (if (side > 0) 1 else 0)) % 2 == 0) {
+                val treeX = cx + side * (hw * (1.26f + ((idx * 17) % 5) * 0.14f))
+                val treeH = (20f + p * 155f)
+                if (env == EnvironmentTheme.DESERT_NIGHT) {
+                    val cCol = lerpColor(Color(0xFF2E5C38), Color(0xFF0E1D13), nightFactor * 0.85f)
+                    drawLine(cCol, Offset(treeX, y), Offset(treeX, y - treeH * 0.82f), strokeWidth = 2.5f + p * 8f, cap = StrokeCap.Round)
+                    drawLine(cCol, Offset(treeX - treeH * 0.18f, y - treeH * 0.52f), Offset(treeX + treeH * 0.18f, y - treeH * 0.52f), strokeWidth = 2f + p * 5f, cap = StrokeCap.Round)
+                } else if (usePalms) {
+                    // BUSSID-iconic slender arching tropical palm tree
+                    val trunkCol = lerpColor(Color(0xFF6D4C3D), Color(0xFF1E1713), nightFactor * 0.82f)
+                    val crownX = treeX + side * (treeH * 0.12f)
+                    val crownY = y - treeH * 0.92f
+                    val trunkPath = Path().apply {
+                        moveTo(treeX, y)
+                        quadraticTo(treeX + side * (treeH * 0.04f), y - treeH * 0.5f, crownX, crownY)
+                    }
+                    drawPath(trunkPath, trunkCol, style = Stroke(width = (2.2f + p * 6.5f), cap = StrokeCap.Round))
+                    val frondDark = lerpColor(Color(0xFF165B2B), Color(0xFF091B10), nightFactor * 0.85f)
+                    val frondBright = lerpColor(Color(0xFF3E8E41), Color(0xFF143419), nightFactor * 0.85f)
+                    for (fi in 0..5) {
+                        val angleRad = (-160f + fi * 32f + (idx % 3) * 6f) * (PI.toFloat() / 180f)
+                        val frondLen = treeH * (0.42f + (fi % 2) * 0.08f)
+                        val tipX = crownX + cos(angleRad) * frondLen
+                        val tipY = crownY + sin(angleRad) * frondLen * 0.65f + treeH * 0.14f
+                        val midX = (crownX + tipX) * 0.5f
+                        val midY = crownY + sin(angleRad) * frondLen * 0.35f - treeH * 0.08f
+                        val frondPath = Path().apply {
+                            moveTo(crownX, crownY)
+                            quadraticTo(midX, midY, tipX, tipY)
+                        }
+                        drawPath(
+                            frondPath,
+                            if (fi % 2 == 0) frondBright else frondDark,
+                            style = Stroke(width = (2.5f + p * 7.5f), cap = StrokeCap.Round)
+                        )
+                    }
+                } else {
+                    // Layered 3-tier alpine pine tree
+                    val trunkCol = lerpColor(Color(0xFF4A3423), Color(0xFF18110C), nightFactor * 0.82f)
+                    drawLine(trunkCol, Offset(treeX, y), Offset(treeX, y - treeH * 0.32f), strokeWidth = 2f + p * 6f)
+                    val tierCols = listOf(
+                        lerpColor(Color(0xFF144023), Color(0xFF08170D), nightFactor * 0.85f),
+                        lerpColor(Color(0xFF1F5C31), Color(0xFF0D2114), nightFactor * 0.85f),
+                        lerpColor(Color(0xFF2E7843), Color(0xFF142E1C), nightFactor * 0.85f)
+                    )
+                    for (tier in 0..2) {
+                        val tierBot = y - treeH * (0.24f + tier * 0.21f)
+                        val tierTop = y - treeH * (0.58f + tier * 0.21f)
+                        val tierHalfW = treeH * (0.34f - tier * 0.07f)
+                        val tp = cache.treePath
+                        tp.reset()
+                        tp.moveTo(treeX, tierTop)
+                        tp.lineTo(treeX + tierHalfW, tierBot)
+                        tp.lineTo(treeX - tierHalfW, tierBot)
+                        tp.close()
+                        drawPath(tp, tierCols[tier])
+                    }
+                }
+            }
+        }
+
+        // Tall Highway Streetlamps every 3rd segment
+        if (idx % 3 == 0) {
+            val lampH = 24f + p * 150f
+            for (side in floatArrayOf(-1f, 1f)) {
+                val px = cx + side * hw * 1.07f
+                drawLine(Color(0xFF64748B), Offset(px, y), Offset(px, y - lampH), strokeWidth = 1.6f + p * 3.8f)
+                val armEndX = px - side * (5f + p * 18f)
+                drawLine(Color(0xFF64748B), Offset(px, y - lampH), Offset(armEndX, y - lampH + 2f), strokeWidth = 1.5f + p * 3f)
+                if (nightFactor > 0.22f) {
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(Color(0xFFFFE599).copy(alpha = 0.60f * nightFactor), Color.Transparent), center = Offset(armEndX, y - lampH + 3f), radius = 10f + p * 44f),
+                        radius = 10f + p * 44f,
+                        center = Offset(armEndX, y - lampH + 3f),
+                        blendMode = BlendMode.Screen
+                    )
+                }
+                drawCircle(if (nightFactor > 0.22f) Color(0xFFFFF8D6) else Color(0xFFCBD5E1), radius = 1.6f + p * 4.5f, center = Offset(armEndX, y - lampH + 3f))
+            }
+        }
+    }
+
+    // Center & Lane Dashed Strips (smoothly scrolling along highway)
+    for (seg in 0..8) {
+        val t0 = ((seg + (1f - dashOffset)) / 9f).coerceIn(0f, 1f)
+        val t1 = ((seg + 0.52f + (1f - dashOffset)) / 9f).coerceIn(0f, 1f)
+        if (t1 <= t0) continue
+        val p0 = t0 * t0
+        val p1 = t1 * t1
+        val y0 = horizonY + (h - horizonY) * p0
+        val y1 = horizonY + (h - horizonY) * p1
+        val (cx0, hw0) = perspectivePos(p0)
+        val (cx1, hw1) = perspectivePos(p1)
+        // Center amber divider
+        drawLine(Color(0xFFF5B82E), Offset(cx0, y0), Offset(cx1, y1), strokeWidth = 1.8f + p1 * 7.5f)
+        // Subtle secondary lane dashes
+        drawLine(Color(0x88E2E8F0), Offset(cx0 - hw0 * 0.45f, y0), Offset(cx1 - hw1 * 0.45f, y1), strokeWidth = 1f + p1 * 3.5f)
+        drawLine(Color(0x88E2E8F0), Offset(cx0 + hw0 * 0.45f, y0), Offset(cx1 + hw1 * 0.45f, y1), strokeWidth = 1f + p1 * 3.5f)
+    }
+
+    // 4. Perspective Landmarks & Traffic Lights (Far -> Near)
+    val sortedLandmarks = physics.landmarks
+        .filter { (it.s - cameraS) in -8f..200f }
+        .sortedByDescending { it.s }
+    for (lm in sortedLandmarks) {
+        val ds = (lm.s - cameraS).coerceAtLeast(0.5f)
+        val depth = (1f - ds / 200f).coerceIn(0f, 1f)
+        val p = depth * depth
+        val ly = horizonY + (h - horizonY) * p
+        val (cx, hw) = perspectivePos(p)
+
+        when (lm.kind) {
+            LandmarkKind.CITY_ORIGIN, LandmarkKind.CITY_MIDTOWN, LandmarkKind.CITY_DESTINATION -> {
+                for (bi in -2..2) {
+                    if (bi == 0) continue
+                    val bx = cx + bi * hw * 0.85f
+                    val bw = hw * (0.38f + (abs(bi) % 2) * 0.14f)
+                    val bh = (24f + (3 - abs(bi)) * 18f) * (0.25f + p * 1.45f)
+                    val bCol = lerpColor(Color(0xFF475569), Color(0xFF0F172A), nightFactor * 0.8f)
+                    drawRect(bCol, Offset(bx - bw * 0.5f, ly - bh), Size(bw, bh))
+                    val winCol = Color(0xFFFFE082).copy(alpha = 0.25f + nightFactor * 0.70f)
+                    for (wf in 1..4) {
+                        drawRect(winCol, Offset(bx - bw * 0.30f, ly - bh + wf * bh * 0.18f), Size(bw * 0.22f, bh * 0.08f))
+                        drawRect(winCol, Offset(bx + bw * 0.08f, ly - bh + wf * bh * 0.18f), Size(bw * 0.22f, bh * 0.08f))
+                    }
+                }
+            }
+            LandmarkKind.HIGHWAY_GANTRY -> {
+                val postH = 26f + p * 135f
+                drawLine(Color(0xFF94A3B8), Offset(cx - hw * 1.02f, ly), Offset(cx - hw * 1.02f, ly - postH), strokeWidth = 2.5f + p * 5f)
+                drawLine(Color(0xFF94A3B8), Offset(cx + hw * 1.02f, ly), Offset(cx + hw * 1.02f, ly - postH), strokeWidth = 2.5f + p * 5f)
+                val signH = postH * 0.30f
+                drawRoundRect(
+                    color = Color(0xFF047857),
+                    topLeft = Offset(cx - hw * 0.96f, ly - postH),
+                    size = Size(hw * 1.92f, signH),
+                    cornerRadius = CornerRadius(4f, 4f)
+                )
+                drawRoundRect(
+                    color = Color.White,
+                    topLeft = Offset(cx - hw * 0.96f + 2f, ly - postH + 2f),
+                    size = Size(hw * 1.92f - 4f, signH - 4f),
+                    cornerRadius = CornerRadius(3f, 3f),
+                    style = Stroke(width = 1.5f + p * 1.5f)
+                )
+                if (p > 0.14f) {
+                    cache.gantryTitlePaint.textSize = (8f + p * 18f).coerceIn(8f, 24f)
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${route.destinationCity.uppercase()} • ${route.displayDistanceKm.toInt()} KM",
+                        cx,
+                        ly - postH + signH * 0.66f,
+                        cache.gantryTitlePaint
+                    )
+                }
+            }
+            LandmarkKind.TOLL_BOOTH -> {
+                val postH = 24f + p * 125f
+                drawLine(Color(0xFF334155), Offset(cx - hw * 1.05f, ly), Offset(cx - hw * 1.05f, ly - postH), strokeWidth = 3f + p * 7f)
+                drawLine(Color(0xFF334155), Offset(cx + hw * 1.05f, ly), Offset(cx + hw * 1.05f, ly - postH), strokeWidth = 3f + p * 7f)
+                drawRoundRect(
+                    color = Color(0xFF0284C7),
+                    topLeft = Offset(cx - hw * 1.08f, ly - postH - postH * 0.18f),
+                    size = Size(hw * 2.16f, postH * 0.28f),
+                    cornerRadius = CornerRadius(5f, 5f)
+                )
+                // Toll booth islands + lifting barrier arm
+                drawRoundRect(Color(0xFF1E293B), Offset(cx - hw * 0.12f, ly - postH * 0.45f), Size(hw * 0.24f, postH * 0.45f), CornerRadius(4f, 4f))
+                val armLift = if (ds < 24f) -55f else 0f
+                rotate(degrees = armLift, pivot = Offset(cx + hw * 0.12f, ly - postH * 0.22f)) {
+                    drawLine(Color(0xFFEF4444), Offset(cx + hw * 0.12f, ly - postH * 0.22f), Offset(cx + hw * 0.90f, ly - postH * 0.22f), strokeWidth = 2.5f + p * 4f, cap = StrokeCap.Round)
+                }
+                if (p > 0.16f) {
+                    cache.gantryTitlePaint.textSize = (8f + p * 16f).coerceIn(8f, 22f)
+                    drawContext.canvas.nativeCanvas.drawText("PEAJE / TOLL", cx, ly - postH + postH * 0.03f, cache.gantryTitlePaint)
+                }
+            }
+            LandmarkKind.FUEL_STATION -> {
+                val bx = cx + hw * 1.24f
+                val cw = hw * 0.92f
+                val ch = 22f + p * 114f
+                // Tall Fuel Price Pylon Totem
+                val totemX = bx - cw * 0.56f
+                drawRect(Color(0xFF334155), Offset(totemX - 2f, ly - ch * 1.25f), Size(4f + p * 4f, ch * 1.25f))
+                drawRoundRect(Color(0xFF0F172A), Offset(totemX - cw * 0.14f, ly - ch * 1.28f), Size(cw * 0.28f, ch * 0.55f), CornerRadius(3f, 3f))
+                drawRect(Color(0xFFF59E0B), Offset(totemX - cw * 0.11f, ly - ch * 1.24f), Size(cw * 0.22f, ch * 0.14f))
+                // Illuminated station canopy + pump islands
+                drawRect(Color(0xFFCBD5E1), Offset(bx - cw * 0.35f, ly - ch), Size(2f + p * 5f, ch))
+                drawRect(Color(0xFFCBD5E1), Offset(bx + cw * 0.35f, ly - ch), Size(2f + p * 5f, ch))
+                drawRoundRect(Color(0xFFDC2626), Offset(bx - cw * 0.12f, ly - ch * 0.36f), Size(cw * 0.14f, ch * 0.36f), CornerRadius(2f, 2f))
+                drawRoundRect(Color(0xFFDC2626), Offset(bx + cw * 0.08f, ly - ch * 0.36f), Size(cw * 0.14f, ch * 0.36f), CornerRadius(2f, 2f))
+                drawRoundRect(Color(0xFF1E293B), Offset(bx - cw * 0.5f, ly - ch - ch * 0.22f), Size(cw, ch * 0.26f), CornerRadius(4f, 4f))
+                drawRect(Color(0xFFF59E0B), Offset(bx - cw * 0.5f, ly - ch - ch * 0.08f), Size(cw, ch * 0.10f))
+                if (nightFactor > 0.2f || p > 0.25f) {
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(Color(0xFFFFF3C4).copy(alpha = 0.28f + 0.35f * nightFactor), Color.Transparent), center = Offset(bx, ly - ch * 0.4f), radius = cw * 0.9f),
+                        radius = cw * 0.9f,
+                        center = Offset(bx, ly - ch * 0.4f),
+                        blendMode = BlendMode.Screen
+                    )
+                }
+            }
+            LandmarkKind.WORKSHOP -> {
+                val bx = cx + hw * 1.24f
+                val ww = hw * 0.92f
+                val wh = 22f + p * 108f
+                drawRoundRect(Color(0xFF1E293B), Offset(bx - ww * 0.5f, ly - wh), Size(ww, wh), CornerRadius(4f, 4f))
+                drawRect(Color(0xFF38BDF8), Offset(bx - ww * 0.5f, ly - wh), Size(ww, wh * 0.22f))
+                drawRect(Color(0xFF0A0E14), Offset(bx - ww * 0.32f, ly - wh * 0.65f), Size(ww * 0.64f, wh * 0.65f))
+            }
+            LandmarkKind.TUNNEL -> {
+                val tw = hw * 2.25f
+                val th = 32f + p * 165f
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFF475569), Color(0xFF1E293B))),
+                    topLeft = Offset(cx - tw * 0.58f, ly - th * 1.18f),
+                    size = Size(tw * 1.16f, th * 1.18f),
+                    cornerRadius = CornerRadius(tw * 0.30f, tw * 0.30f)
+                )
+                drawRoundRect(
+                    color = Color(0xFFF59E0B),
+                    topLeft = Offset(cx - tw * 0.48f, ly - th),
+                    size = Size(tw * 0.96f, th),
+                    cornerRadius = CornerRadius(tw * 0.26f, tw * 0.26f),
+                    style = Stroke(width = 3f + p * 5f)
+                )
+            }
+            LandmarkKind.WIND_FARM -> {
+                val tx = cx - hw * 1.45f
+                val hubY = ly - (30f + p * 145f)
+                drawLine(Color(0xFFE2E8F0), Offset(tx, ly), Offset(tx, hubY), strokeWidth = 2f + p * 4f)
+                val bLen = 12f + p * 58f
+                rotate(degrees = snapshot.simClock * 55f, pivot = Offset(tx, hubY)) {
+                    for (b in 0..2) {
+                        rotate(degrees = b * 120f, pivot = Offset(tx, hubY)) {
+                            drawLine(Color(0xFFF8FAFC), Offset(tx, hubY), Offset(tx, hubY - bLen), strokeWidth = 2f + p * 3f, cap = StrokeCap.Round)
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    // Traffic Lights + Zebra Crosswalks ahead in 2.5D perspective
+    for (tl in snapshot.trafficLightsCopy) {
+        val ds = tl.s - cameraS
+        if (ds in 2f..185f) {
+            val depth = (1f - ds / 185f).coerceIn(0f, 1f)
+            val p = depth * depth
+            val vy = horizonY + (h - horizonY) * p
+            val (cx, hw) = perspectivePos(p)
+
+            // Crisp road stop line & zebra crosswalk stripes across highway
+            if (p > 0.08f) {
+                val stripeH = (2.5f + p * 14f)
+                for (zi in -3..3) {
+                    val zx = cx + zi * hw * 0.24f
+                    drawRect(
+                        color = Color(0xCCEEF2F6),
+                        topLeft = Offset(zx - hw * 0.08f, vy - stripeH * 0.5f),
+                        size = Size(hw * 0.15f, stripeH)
+                    )
+                }
+            }
+
+            val poleX = cx + hw * 1.03f
+            val headH = 22f + p * 92f
+            drawLine(Color(0xFF64748B), Offset(poleX, vy), Offset(poleX, vy - headH), strokeWidth = 2.5f + p * 4.5f)
+            drawRoundRect(Color(0xFF111827), Offset(poleX - (5f + p * 10f), vy - headH - (12f + p * 26f)), Size(10f + p * 20f, 18f + p * 36f), CornerRadius(4f, 4f))
+            val lCol = when (tl.state) {
+                TrafficLightState.GREEN -> Color(0xFF22C55E)
+                TrafficLightState.AMBER -> Color(0xFFF59E0B)
+                TrafficLightState.RED -> Color(0xFFEF4444)
+            }
+            drawCircle(lCol, radius = (3.5f + p * 7.5f), center = Offset(poleX, vy - headH - (3f + p * 8f)))
+            if (p > 0.15f) {
+                drawCircle(
+                    brush = Brush.radialGradient(listOf(lCol.copy(alpha = 0.55f), Color.Transparent), center = Offset(poleX, vy - headH - (3f + p * 8f)), radius = 14f + p * 32f),
+                    radius = 14f + p * 32f,
+                    center = Offset(poleX, vy - headH - (3f + p * 8f)),
+                    blendMode = BlendMode.Screen
+                )
+            }
+        }
+    }
+
+    // 5. Depth-Sorted Traffic + Convoy Players ahead of camera (sorted far -> near)
+    val items = ArrayList<PerspectiveTrafficDraw>(snapshot.trafficCopy.size + snapshot.remoteConvoyPlayers.size)
+    for (v in snapshot.trafficCopy) {
+        val ds = v.s - cameraS
+        if (ds in 3f..185f) items.add(PerspectiveTrafficDraw(ds = ds, isConvoy = false, traffic = v))
+    }
+    for (cp in snapshot.remoteConvoyPlayers) {
+        val ds = cp.roadS.toFloat() - cameraS
+        if (ds in 3f..195f) items.add(PerspectiveTrafficDraw(ds = ds, isConvoy = true, convoy = cp))
+    }
+    items.sortByDescending { it.ds }
+
+    for (item in items) {
+        val maxD = if (item.isConvoy) 195f else 185f
+        val depth = (1f - item.ds / maxD).coerceIn(0f, 1f)
+        val p = depth * depth
+        val vy = horizonY + (h - horizonY) * p
+        val (cx, hw) = perspectivePos(p)
+
+        if (item.isConvoy && item.convoy != null) {
+            val cp = item.convoy
+            val vx = cx + (cp.laneOffset.toFloat() / 5.4f) * hw
+            val carW = (0.36f * hw).coerceAtLeast(10f)
+            drawTrafficVehicle2DRearFront(
+                vehicleType = TrafficVehicleType.TRUCK,
+                isOncoming = false,
+                bodyColor = Truck2DArtwork.parseHexColor(cp.paintColorHex, Color(0xFF38BDF8)),
+                cx = vx,
+                bottomY = vy,
+                width = carW,
+                nightFactor = nightFactor,
+                braking = cp.speedKmh < 5L,
+                vpX = topCenterX
+            )
+            if (p > 0.08f) {
+                drawConvoyTag2D(cp.driverName, cp.speedKmh.toInt(), cp.hornActive, vx, vy - carW * 1.45f)
+            }
+        } else if (item.traffic != null) {
+            val v = item.traffic
+            val vx = cx + (v.laneOffset / 5.4f) * hw
+            val carW = (if (v.isTruck) 0.35f else 0.25f) * hw
+            drawTrafficVehicle2DRearFront(
+                vehicleType = v.type,
+                isOncoming = v.isOncoming,
+                bodyColor = Color(v.colorRgb[0], v.colorRgb[1], v.colorRgb[2]),
+                cx = vx,
+                bottomY = vy,
+                width = carW.coerceAtLeast(6f),
+                nightFactor = nightFactor,
+                braking = v.braking,
+                vpX = topCenterX
+            )
+        }
+    }
+
+    // 6. Player Customized 2D Truck + Trailer Rig in Lower-Center Chase Foreground
+    val rigWidth = (minOf(w, h) * 0.26f).coerceIn(96f, 178f)
+    val bouncePx = if (abs(snapshot.speedMs) > 0.6f) {
+        sin(snapshot.simClock * 22f) * (abs(snapshot.speedMs) / 28f).coerceIn(0f, 1f) * 3.0f
+    } else 0f
+    val truckScreenX = if (snapshot.driverOnFoot) {
+        val dsTruck = snapshot.roadProgressMeters - cameraS
+        val (cxTruck, hwTruck) = perspectivePos((1f - (dsTruck / 100f)).coerceIn(0.3f, 0.92f))
+        cxTruck + ((snapshot.laneOffset - activeLane) / 5.4f) * hwTruck
+    } else {
+        w * 0.5f + snapshot.steerWheelAngleRad * w * 0.025f
+    }
+    val truckGroundY = h * 0.87f
+
+    drawTruckRig2DRearChase(
+        truck = truck,
+        visualConfig = visualConfig,
+        cx = truckScreenX,
+        groundY = truckGroundY,
+        rigWidth = rigWidth,
+        steerNorm = (snapshot.steerWheelAngleRad / 0.55f).coerceIn(-1f, 1f),
+        trailerRelYawRad = (snapshot.trailerYaw - snapshot.tractorYaw),
+        bouncePx = bouncePx,
+        headlightsOn = snapshot.headlightsOn,
+        braking = snapshot.braking,
+        reversing = snapshot.reversing,
+        leftBlinker = snapshot.leftBlinkerOn,
+        rightBlinker = snapshot.rightBlinkerOn,
+        nightFactor = nightFactor,
+        throttleLevel = snapshot.throttleLevel,
+        simClock = snapshot.simClock,
+        rainIntensity = snapshot.rainIntensity,
+        speedMs = snapshot.speedMs,
+        vpX = topCenterX
+    )
+
+    // Walking Driver ("Hombre 2D") beside truck when driverOnFoot is active
+    if (snapshot.driverOnFoot) {
+        drawDriverOnFoot2DChase(
+            centerX = w * 0.5f,
+            groundY = h * 0.91f,
+            heightPx = rigWidth * 0.58f,
+            walkCycle = snapshot.driverWalkCycle,
+            walkSpeed = snapshot.driverWalkSpeed,
+            driverSprite = driverSprite
+        )
+    }
+
+    // 7. Tunnel Interior Atmospheric Overlay when driving inside tunnel
+    for (lm in physics.landmarks) {
+        if (lm.kind == LandmarkKind.TUNNEL && abs(lm.s - cameraS) < lm.spanMeters * 0.45f) {
+            drawRect(color = Color(0x8804060B), size = size)
+            for (li in 0..2) {
+                val ly = horizonY + li * (h * 0.16f)
+                drawCircle(
+                    brush = Brush.radialGradient(listOf(Color(0xFFFFB74D).copy(alpha = 0.42f), Color.Transparent), center = Offset(w * 0.5f, ly), radius = w * 0.24f),
+                    radius = w * 0.24f,
+                    center = Offset(w * 0.5f, ly),
+                    blendMode = BlendMode.Screen
+                )
+            }
+        }
+    }
+
+    drawAtmosphericEffects2D(
+        w = w,
+        h = h,
+        roadBotY = h,
+        speedMs = snapshot.speedMs,
+        nightFactor = nightFactor * 0.72f,
+        rainIntensity = snapshot.rainIntensity,
+        fogDensity = snapshot.fogDensity,
+        simClock = snapshot.simClock,
+        rainSeeds = rainSeeds
+    )
+}
+
 private fun DrawScope.drawSide2DWorld(
     snapshot: RenderSnapshot,
     physics: TruckPhysicsEngine,
@@ -236,7 +890,8 @@ private fun DrawScope.drawSide2DWorld(
     sunsetFactor: Float,
     stars: List<StarSeed>,
     rainSeeds: List<RainDropSeed>,
-    closeUpSide: Boolean
+    closeUpSide: Boolean,
+    driverSprite: ImageBitmap?
 ) {
     val w = size.width
     val h = size.height
@@ -406,7 +1061,8 @@ private fun DrawScope.drawSide2DWorld(
             scale = pxPerMeter * 1.15f,
             facingRight = sin(snapshot.driverYaw) >= 0f,
             walkCycle = snapshot.driverWalkCycle,
-            walkSpeed = snapshot.driverWalkSpeed
+            walkSpeed = snapshot.driverWalkSpeed,
+            driverSprite = driverSprite
         )
     }
 
@@ -440,7 +1096,8 @@ private fun DrawScope.drawSide2DWorld(
             scale = pxPerMeter * 1.15f,
             facingRight = sin(snapshot.driverYaw) >= 0f,
             walkCycle = snapshot.driverWalkCycle,
-            walkSpeed = snapshot.driverWalkSpeed
+            walkSpeed = snapshot.driverWalkSpeed,
+            driverSprite = driverSprite
         )
     }
 
@@ -933,7 +1590,8 @@ private fun DrawScope.drawCab2DHorizonWorld(
                 bottomY = vy,
                 width = carW,
                 nightFactor = nightFactor,
-                braking = cp.speedKmh < 5L
+                braking = cp.speedKmh < 5L,
+                vpX = topCenterX
             )
             drawConvoyTag2D(cp.driverName, cp.speedKmh.toInt(), cp.hornActive, vx, vy - carW * 1.25f)
         }
@@ -958,7 +1616,8 @@ private fun DrawScope.drawCab2DHorizonWorld(
                 bottomY = vy,
                 width = carW,
                 nightFactor = nightFactor,
-                braking = v.braking
+                braking = v.braking,
+                vpX = topCenterX
             )
         }
     }
@@ -1038,14 +1697,18 @@ private fun DrawScope.drawDynamicSky2D(
         drawCircle(color = Color(0xFFE6EEFF), radius = 17f, center = Offset(moonX, moonY))
     }
 
-    val cloudAlpha = (0.36f * (1f - nightFactor * 0.65f)).coerceIn(0.08f, 0.42f)
-    val cloudCol = lerpColor(Color(0xFFFFFFFF), Color(0xFFFFC18E), sunsetFactor).copy(alpha = cloudAlpha)
+    val cloudAlpha = (0.42f * (1f - nightFactor * 0.68f)).coerceIn(0.08f, 0.48f)
+    val cloudLit = lerpColor(Color(0xFFFFFFFF), Color(0xFFFFCBA4), sunsetFactor).copy(alpha = cloudAlpha)
+    val cloudShade = lerpColor(Color(0xFFC5D5E8), Color(0xFFD9876E), sunsetFactor).copy(alpha = cloudAlpha * 0.78f)
     val drift = (cameraS * 0.04f + simClock * 4.5f)
     for (i in 0..4) {
-        val cx = ((i * w * 0.28f - drift) % (w + 260f) + (w + 260f)) % (w + 260f) - 130f
-        val cy = horizonY * (0.16f + (i % 3) * 0.12f)
-        drawOval(cloudCol, topLeft = Offset(cx, cy), size = Size(165f, 36f))
-        drawOval(cloudCol, topLeft = Offset(cx + 38f, cy - 14f), size = Size(92f, 34f))
+        val cx = ((i * w * 0.28f - drift) % (w + 280f) + (w + 280f)) % (w + 280f) - 140f
+        val cy = horizonY * (0.14f + (i % 3) * 0.13f)
+        val sc = 0.85f + (i % 3) * 0.20f
+        drawOval(cloudShade, topLeft = Offset(cx + 8f, cy + 10f * sc), size = Size(168f * sc, 28f * sc))
+        drawOval(cloudLit, topLeft = Offset(cx, cy), size = Size(120f * sc, 34f * sc))
+        drawOval(cloudLit, topLeft = Offset(cx + 34f * sc, cy - 16f * sc), size = Size(92f * sc, 40f * sc))
+        drawOval(cloudLit, topLeft = Offset(cx + 84f * sc, cy - 6f * sc), size = Size(78f * sc, 32f * sc))
     }
 }
 
@@ -1149,7 +1812,7 @@ private fun DrawScope.drawSceneryStructures2D(
         val sx = w * 0.40f + (sPos - cameraS) * pxPerMeter
         val idx = (sPos / 14f).toInt()
 
-        val treeH = pxPerMeter * (2.7f + (idx % 3) * 0.65f)
+        val treeH = pxPerMeter * (2.8f + (idx % 3) * 0.68f)
         if (env == EnvironmentTheme.DESERT_NIGHT) {
             val cCol = lerpColor(Color(0xFF2E5C38), Color(0xFF0E1D13), nightFactor * 0.85f)
             drawLine(cCol, Offset(sx, groundBaseY), Offset(sx, groundBaseY - treeH * 0.72f), strokeWidth = 8f, cap = StrokeCap.Round)
@@ -1158,19 +1821,15 @@ private fun DrawScope.drawSceneryStructures2D(
             drawLine(cCol, Offset(sx + 12f, groundBaseY - treeH * 0.45f), Offset(sx + 12f, groundBaseY - treeH * 0.66f), strokeWidth = 5f, cap = StrokeCap.Round)
         } else {
             val trunkCol = lerpColor(Color(0xFF4B3626), Color(0xFF18120E), nightFactor * 0.8f)
-            drawRect(trunkCol, topLeft = Offset(sx - 3.5f, groundBaseY - treeH * 0.26f), size = Size(7f, treeH * 0.26f))
-            val leafDark = lerpColor(Color(0xFF1F4724), Color(0xFF0A180E), nightFactor * 0.85f)
-            val leafLight = lerpColor(Color(0xFF346B38), Color(0xFF132617), nightFactor * 0.85f)
-            for (tier in 0..2) {
-                val ty = groundBaseY - treeH * (0.28f + tier * 0.22f)
-                val tw = treeH * (0.36f - tier * 0.08f)
-                treePath.reset()
-                treePath.moveTo(sx, ty - treeH * 0.35f)
-                treePath.lineTo(sx + tw, ty)
-                treePath.lineTo(sx - tw, ty)
-                treePath.close()
-                drawPath(treePath, if (tier == 2) leafLight else leafDark)
-            }
+            drawRect(trunkCol, topLeft = Offset(sx - 4f, groundBaseY - treeH * 0.36f), size = Size(8f, treeH * 0.36f))
+            val leafDark = lerpColor(Color(0xFF1B4D22), Color(0xFF0A180E), nightFactor * 0.85f)
+            val leafMid = lerpColor(Color(0xFF2C6D33), Color(0xFF102414), nightFactor * 0.85f)
+            val leafLight = lerpColor(Color(0xFF428D49), Color(0xFF19351E), nightFactor * 0.85f)
+            val r = treeH * 0.25f
+            drawCircle(leafDark, radius = r * 1.02f, center = Offset(sx - r * 0.44f, groundBaseY - treeH * 0.50f))
+            drawCircle(leafDark, radius = r * 1.02f, center = Offset(sx + r * 0.44f, groundBaseY - treeH * 0.50f))
+            drawCircle(leafMid, radius = r * 1.15f, center = Offset(sx, groundBaseY - treeH * 0.68f))
+            drawCircle(leafLight, radius = r * 0.72f, center = Offset(sx - r * 0.14f, groundBaseY - treeH * 0.78f))
         }
 
         if (idx % 5 == 1) {

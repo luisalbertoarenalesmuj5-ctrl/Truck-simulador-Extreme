@@ -29,6 +29,22 @@
           "type": "integer",
           "description": "Driver career experience points."
         },
+        "level": {
+          "type": "integer",
+          "description": "Current driver career level (1-500), synchronized with XP."
+        },
+        "claimedMilestoneIds": {
+          "type": "array",
+          "description": "Bounded list of claimed career milestone and certification IDs (max 20)."
+        },
+        "activeContractId": {
+          "type": "string",
+          "description": "Optional ID of the currently accepted delivery contract under /users/{userId}/contracts."
+        },
+        "contractsCompleted": {
+          "type": "integer",
+          "description": "Total completed random delivery contracts."
+        },
         "selectedTruckId": {
           "type": "string",
           "enum": [
@@ -343,16 +359,124 @@
         }
       },
       "required": ["userId", "senderName", "text", "createdAt"]
+    },
+    "DeliveryContract": {
+      "title": "DeliveryContract",
+      "description": "Procedurally generated freight delivery contract with difficulty tier, rewards, and status stored under the driver's profile.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the driver."
+        },
+        "title": {
+          "type": "string",
+          "description": "Generated contract headline (3-80 chars)."
+        },
+        "companyName": {
+          "type": "string",
+          "description": "Client logistics company name (2-50 chars)."
+        },
+        "cargoName": {
+          "type": "string",
+          "description": "Freight cargo description (2-80 chars)."
+        },
+        "cargoTons": {
+          "type": "integer",
+          "description": "Cargo weight in metric tons (5-60)."
+        },
+        "trailerType": {
+          "type": "string",
+          "enum": ["REEFER_BOX", "FUEL_TANKER", "TIMBER_LOGS", "FLATBED_EXCAVATOR", "CAR_CARRIER", "WIND_TURBINE", "AGRI_GRAIN"],
+          "description": "Trailer type required by this contract."
+        },
+        "originCity": {
+          "type": "string",
+          "description": "Pickup city name."
+        },
+        "destinationCity": {
+          "type": "string",
+          "description": "Dropoff city name."
+        },
+        "routeId": {
+          "type": "string",
+          "description": "Target highway/biome route spec ID."
+        },
+        "distanceKm": {
+          "type": "number",
+          "description": "Contract distance in km."
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["FACIL", "MEDIA", "ALTA", "EXTREMA"],
+          "description": "Difficulty tier of the contract."
+        },
+        "rewardCredits": {
+          "type": "integer",
+          "description": "Base money reward in credits (1000-500000)."
+        },
+        "rewardXp": {
+          "type": "integer",
+          "description": "Base XP reward (50-25000)."
+        },
+        "bonusPerfectCredits": {
+          "type": "integer",
+          "description": "Extra payout for 0% cargo damage (0-150000)."
+        },
+        "requiredLevel": {
+          "type": "integer",
+          "description": "Minimum driver level required to accept the contract."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["AVAILABLE", "ACTIVE", "COMPLETED"],
+          "description": "Current contract lifecycle status."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when contract was generated."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when contract was last updated."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "companyName",
+        "cargoName",
+        "cargoTons",
+        "trailerType",
+        "originCity",
+        "destinationCity",
+        "routeId",
+        "distanceKm",
+        "difficulty",
+        "rewardCredits",
+        "rewardXp",
+        "bonusPerfectCredits",
+        "requiredLevel",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/DriverProfile" },
-      "description": "Stores each driver's career profile, garage ownership, workshop customization, damage, and control settings."
+      "description": "Stores each driver's career profile, garage ownership, workshop customization, damage, active contract ID, and control settings."
     },
     "/users/{userId}/deliveries/{deliveryId}": {
       "schema": { "$ref": "#/entities/DeliveryRecord" },
       "description": "Stores completed freight haul records for each driver."
+    },
+    "/users/{userId}/contracts/{contractId}": {
+      "schema": { "$ref": "#/entities/DeliveryContract" },
+      "description": "Stores randomly generated delivery contracts with difficulty tiers and rewards under the driver's profile."
     },
     "/convoyRooms/{roomId}": {
       "schema": { "$ref": "#/entities/ConvoyRoom" },
