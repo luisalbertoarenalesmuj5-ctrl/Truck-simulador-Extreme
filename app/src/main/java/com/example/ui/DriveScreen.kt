@@ -99,7 +99,8 @@ fun DriveScreen(
     val scope = rememberCoroutineScope()
 
     val physics = remember(truck.id, route.id) { TruckPhysicsEngine(truck, route) }
-    val renderer = remember(physics) { TruckSimRenderer(physics, truck) }
+    val renderer = remember(context, physics) { TruckSimRenderer(context, physics, truck) }
+    var visualClockSec by remember { mutableFloatStateOf(0f) }
 
     var steeringMode by remember { mutableStateOf(initialSteeringMode) }
     var sensitivity by remember { mutableFloatStateOf(initialSensitivity) }
@@ -183,6 +184,9 @@ fun DriveScreen(
             withFrameNanos { frameNanos ->
                 if (lastNanos != 0L) {
                     val dt = (frameNanos - lastNanos) / 1_000_000_000f
+                    if (!paused) {
+                        visualClockSec += dt
+                    }
                     physics.step(dt, paused)
                     hudAccum += dt
                     if (hudAccum >= 0.05f) {
@@ -220,12 +224,24 @@ fun DriveScreen(
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(ObsidianNight)) {
         val isCompactWidth = maxWidth < 600.dp
 
-        // 1. Full-Bleed Real-Time OpenGL ES 3D Viewport
+        // 1. Full-Bleed Real-Time Viewport
         TruckGlViewport(
             renderer = renderer,
             cameraMode = cameraMode,
             modifier = Modifier.fillMaxSize()
         )
+
+        // 1b. Photorealistic Cabin Interior Overlay in Vista Real (CAB) mode
+        if (!telemetry.driverOnFoot && cameraMode == CameraMode.CAB) {
+            RealCockpitOverlay(
+                speedKmh = telemetry.speedKmh,
+                rpm = telemetry.rpm,
+                steerNorm = telemetry.steerAngleNorm,
+                upcomingCurvature = telemetry.upcomingCurvature,
+                environment = route.environment,
+                simTimeSec = visualClockSec
+            )
+        }
 
         // Impact vignette flash on guardrail/traffic hit
         if (telemetry.collisionFlash > 0.05f) {

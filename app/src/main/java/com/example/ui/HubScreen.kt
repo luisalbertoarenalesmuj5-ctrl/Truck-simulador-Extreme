@@ -92,6 +92,7 @@ import com.example.data.signOutFromApp
 import com.example.model.CameraMode
 import com.example.model.DeliveryRecord
 import com.example.model.DriverProfile
+import com.example.model.EnvironmentTheme
 import com.example.model.RouteCatalog
 import com.example.model.RouteSpec
 import com.example.model.SteeringMode
@@ -477,6 +478,11 @@ private fun RoutesDispatchTab(
 
 @Composable
 private fun RouteCard(route: RouteSpec, onLaunch: () -> Unit) {
+    val routePhotoRes = when (route.environment) {
+        EnvironmentTheme.DESERT_NIGHT -> R.drawable.img_real_highway_night
+        EnvironmentTheme.COASTAL_SUNSET -> R.drawable.img_truck_hero
+        EnvironmentTheme.ALPINE_DAY, EnvironmentTheme.STORM_SUMMIT -> R.drawable.img_real_highway_alpine
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = SteelSlate),
         shape = MaterialTheme.shapes.medium,
@@ -484,44 +490,68 @@ private fun RouteCard(route: RouteSpec, onLaunch: () -> Unit) {
             .fillMaxWidth()
             .border(1.dp, GunmetalBorder, MaterialTheme.shapes.medium)
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${route.originCity} → ${route.destinationCity}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CobaltBeacon
-                    )
-                    Text(
-                        text = route.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
-                    )
-                }
-                Surface(
-                    color = GoldTrophy.copy(alpha = 0.16f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.border(1.dp, GoldTrophy.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+        Column {
+            Box(modifier = Modifier.fillMaxWidth().height(118.dp)) {
+                Image(
+                    painter = painterResource(id = routePhotoRes),
+                    contentDescription = "Vista previa real de ${route.title}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    ObsidianNight.copy(alpha = 0.25f),
+                                    SteelSlate.copy(alpha = 0.92f)
+                                )
+                            )
+                        )
+                )
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
                 ) {
-                    Text(
-                        text = "+$${route.baseRewardCredits}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = GoldTrophy,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${route.originCity} → ${route.destinationCity}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CobaltBeacon
+                        )
+                        Text(
+                            text = route.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                    }
+                    Surface(
+                        color = GoldTrophy.copy(alpha = 0.20f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.border(1.dp, GoldTrophy.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    ) {
+                        Text(
+                            text = "+$${route.baseRewardCredits}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = GoldTrophy,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
                 }
             }
 
-            Text(
-                text = "${route.cargoName} • ${route.cargoTons} toneladas • ${route.environment.label} (${route.environment.weatherLabel})",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MutedSteel
-            )
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "${route.cargoName} • ${route.cargoTons} toneladas • ${route.environment.label} (${route.environment.weatherLabel})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MutedSteel
+                )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -532,18 +562,19 @@ private fun RouteCard(route: RouteSpec, onLaunch: () -> Unit) {
                 MiniStatBadge("Dificultad: ${route.difficultyLabel}")
             }
 
-            Button(
-                onClick = onLaunch,
-                colors = ButtonDefaults.buttonColors(containerColor = AmberDiesel, contentColor = ObsidianNight),
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("btn_drive_route_${route.id}")
-            ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(id = R.string.drive_now), style = MaterialTheme.typography.labelLarge)
+                Button(
+                    onClick = onLaunch,
+                    colors = ButtonDefaults.buttonColors(containerColor = AmberDiesel, contentColor = ObsidianNight),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("btn_drive_route_${route.id}")
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(id = R.string.drive_now), style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }
@@ -561,8 +592,52 @@ private fun GarageFleetTab(
         modifier = Modifier.fillMaxSize()
     ) {
         item {
+            Card(
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = SteelSlate),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, GunmetalBorder, MaterialTheme.shapes.large)
+            ) {
+                Box(modifier = Modifier.fillMaxWidth().height(150.dp)) {
+                    Image(
+                        painter = painterResource(id = R.drawable.img_real_truck_fleet),
+                        contentDescription = "Exhibición real de flota pesada",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(ObsidianNight.copy(alpha = 0.20f), ObsidianNight.copy(alpha = 0.88f))
+                                )
+                            )
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(16.dp)
+                    ) {
+                        Text(
+                            text = "GARAJE DE TRACTOCAMIONES",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AmberDiesel
+                        )
+                        Text(
+                            text = "Flota Real de Alto Tonelaje",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
             Text(
-                text = "FLOTA DE TRACTOCAMIONES",
+                text = "UNIDADES DISPONIBLES",
                 style = MaterialTheme.typography.labelLarge,
                 color = MutedSteel
             )

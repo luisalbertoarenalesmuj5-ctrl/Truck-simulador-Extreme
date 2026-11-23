@@ -65,10 +65,21 @@ import com.example.ui.theme.EmeraldCargo
 import com.example.ui.theme.GunmetalBorder
 import com.example.ui.theme.ObsidianNight
 import com.example.ui.theme.SteelSlate
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.IntOffset
+import com.example.R
+import com.example.model.EnvironmentTheme
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @Composable
@@ -744,6 +755,250 @@ fun OnFootActionCluster(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold
             )
+        }
+    }
+}
+
+@Composable
+fun RealCockpitOverlay(
+    speedKmh: Int,
+    rpm: Int,
+    steerNorm: Float,
+    upcomingCurvature: Float,
+    environment: EnvironmentTheme,
+    simTimeSec: Float,
+    modifier: Modifier = Modifier
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val viewW = with(density) { maxWidth.toPx() }
+        val viewH = with(density) { maxHeight.toPx() }
+        val isPortrait = viewW <= viewH * 1.05f
+
+        val srcW = 1200f
+        val srcH = 896f
+        val scale = if (isPortrait) {
+            viewW / srcW
+        } else {
+            maxOf(viewW / srcW, viewH / srcH)
+        }
+        val imgW = srcW * scale
+        val imgH = srcH * scale
+        val imgLeft = (viewW - imgW) * 0.5f
+        val bottomLift = if (isPortrait) with(density) { 58.dp.toPx() } else 0f
+        val imgTop = viewH - imgH - bottomLift
+
+        // Micro suspension road bounce proportional to speed
+        val bounceY = if (speedKmh > 2) {
+            sin(simTimeSec * 18f) * (speedKmh / 100f).coerceIn(0f, 1f) * 3.2f
+        } else 0f
+
+        // Seamless dark cabin footwell extension under dashboard on tall portrait screens
+        if (isPortrait) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(100.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color(0xFF0E1217), Color(0xFF090B0E))
+                        )
+                    )
+            )
+            // Realistic upper windshield sun visor & A-pillar edge framing
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xD80A0D12), Color(0x7010161E), Color.Transparent)
+                        )
+                    )
+            )
+        }
+
+        // Animated windshield wipers + sun-glare reflection + live dials + steering wheel
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            // Subtle realistic glass reflection tint across upper windshield
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color(0x1888B8E8), Color.Transparent),
+                    startY = 0f,
+                    endY = size.height * 0.48f
+                )
+            )
+
+            // Windshield wipers sweeping during Storm Summit
+            if (environment == EnvironmentTheme.STORM_SUMMIT) {
+                val sweepDeg = -18f + (sin(simTimeSec * 3.4f) * 0.5f + 0.5f) * 68f
+                val wiperBaseY = (imgTop + imgH * 0.56f).coerceIn(size.height * 0.42f, size.height * 0.72f)
+                val wiperLen = (imgW * 0.28f).coerceAtLeast(160f)
+                for (bx in floatArrayOf(size.width * 0.28f, size.width * 0.64f)) {
+                    val rad = Math.toRadians(sweepDeg.toDouble() - 90.0).toFloat()
+                    val ex = bx + cos(rad) * wiperLen
+                    val ey = wiperBaseY + sin(rad) * wiperLen
+                    drawLine(
+                        color = Color(0xCC12151A),
+                        start = Offset(bx, wiperBaseY),
+                        end = Offset(ex, ey),
+                        strokeWidth = 7f,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+        }
+
+        // Genuine photographic semi-truck cabin interior PNG (transparent windshield & mirrors)
+        Image(
+            painter = painterResource(id = R.drawable.img_real_cockpit),
+            contentDescription = "Cabina real de camión",
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        x = imgLeft.roundToInt(),
+                        y = (imgTop + bounceY).roundToInt()
+                    )
+                }
+                .size(
+                    width = with(density) { imgW.toDp() },
+                    height = with(density) { imgH.toDp() }
+                )
+        )
+
+        // Live illuminated gauge needles, GPS route path & rotating steering wheel with driver hands
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val baseTop = imgTop + bounceY
+
+            // 1. Live RPM Needle (Left Gauge Dial at 0.355, 0.695)
+            val rpmCenter = Offset(imgLeft + imgW * 0.355f, baseTop + imgH * 0.695f)
+            val rpmFrac = ((rpm - 500f) / 2000f).coerceIn(0f, 1f)
+            val rpmAngleRad = Math.toRadians((135f + rpmFrac * 250f).toDouble()).toFloat()
+            val rpmNeedleLen = imgW * 0.025f
+            drawLine(
+                color = Color(0xFFFF521B),
+                start = rpmCenter,
+                end = Offset(
+                    rpmCenter.x + cos(rpmAngleRad) * rpmNeedleLen,
+                    rpmCenter.y + sin(rpmAngleRad) * rpmNeedleLen
+                ),
+                strokeWidth = (imgW * 0.0032f).coerceAtLeast(2.5f),
+                cap = StrokeCap.Round
+            )
+
+            // 2. Live Speedometer Needle (Right Gauge Dial at 0.480, 0.675)
+            val spdCenter = Offset(imgLeft + imgW * 0.480f, baseTop + imgH * 0.675f)
+            val spdFrac = (speedKmh / 125f).coerceIn(0f, 1f)
+            val spdAngleRad = Math.toRadians((135f + spdFrac * 250f).toDouble()).toFloat()
+            val spdNeedleLen = imgW * 0.025f
+            drawLine(
+                color = Color(0xFFFF521B),
+                start = spdCenter,
+                end = Offset(
+                    spdCenter.x + cos(spdAngleRad) * spdNeedleLen,
+                    spdCenter.y + sin(spdAngleRad) * spdNeedleLen
+                ),
+                strokeWidth = (imgW * 0.0032f).coerceAtLeast(2.5f),
+                cap = StrokeCap.Round
+            )
+
+            // 3. Live GPS Curve Line overlay inside dashboard navigation display (0.612, 0.655)
+            val gpsCenter = Offset(imgLeft + imgW * 0.612f, baseTop + imgH * 0.652f)
+            val gpsH = imgH * 0.055f
+            val curveShift = (upcomingCurvature * 2200f).coerceIn(-imgW * 0.025f, imgW * 0.025f)
+            drawLine(
+                color = EmeraldCargo,
+                start = Offset(gpsCenter.x, gpsCenter.y + gpsH * 0.35f),
+                end = Offset(gpsCenter.x + curveShift, gpsCenter.y - gpsH * 0.35f),
+                strokeWidth = (imgW * 0.0045f).coerceAtLeast(3f),
+                cap = StrokeCap.Round
+            )
+            drawCircle(
+                color = AmberDiesel,
+                radius = (imgW * 0.0055f).coerceAtLeast(3.5f),
+                center = Offset(gpsCenter.x, gpsCenter.y + gpsH * 0.35f)
+            )
+
+            // 4. Live Rotating Leather Steering Wheel + Driver Hands mounted on Steering Column (0.462, 0.782)
+            val wheelPivot = Offset(imgLeft + imgW * 0.462f, baseTop + imgH * 0.782f)
+            val wheelR = imgW * 0.115f
+            val wheelRotDeg = steerNorm * 145f
+
+            rotate(degrees = wheelRotDeg, pivot = wheelPivot) {
+                // Soft drop shadow on dash behind rim
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.42f),
+                    radius = wheelR,
+                    center = Offset(wheelPivot.x + 3f, wheelPivot.y + 6f),
+                    style = Stroke(width = wheelR * 0.17f)
+                )
+                // Metallic center spokes
+                val spokeW = wheelR * 0.15f
+                drawLine(
+                    color = Color(0xFF475569),
+                    start = Offset(wheelPivot.x - wheelR * 0.88f, wheelPivot.y),
+                    end = Offset(wheelPivot.x + wheelR * 0.88f, wheelPivot.y),
+                    strokeWidth = spokeW,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = Color(0xFF475569),
+                    start = wheelPivot,
+                    end = Offset(wheelPivot.x, wheelPivot.y + wheelR * 0.88f),
+                    strokeWidth = spokeW,
+                    cap = StrokeCap.Round
+                )
+                // Stitched dark leather rim
+                drawCircle(
+                    color = Color(0xFF15181D),
+                    radius = wheelR,
+                    center = wheelPivot,
+                    style = Stroke(width = wheelR * 0.16f)
+                )
+                drawCircle(
+                    color = Color(0xFF2B313B),
+                    radius = wheelR,
+                    center = wheelPivot,
+                    style = Stroke(width = wheelR * 0.09f)
+                )
+                // Amber 12-o'clock center ring
+                drawArc(
+                    color = AmberDiesel,
+                    startAngle = -97f,
+                    sweepAngle = 14f,
+                    useCenter = false,
+                    topLeft = Offset(wheelPivot.x - wheelR, wheelPivot.y - wheelR),
+                    size = Size(wheelR * 2f, wheelR * 2f),
+                    style = Stroke(width = wheelR * 0.16f)
+                )
+                // Center leather horn pad
+                drawCircle(color = Color(0xFF1A1E24), radius = wheelR * 0.28f, center = wheelPivot)
+                drawCircle(
+                    color = Color(0xFF64748B),
+                    radius = wheelR * 0.28f,
+                    center = wheelPivot,
+                    style = Stroke(width = 2.5f)
+                )
+                drawCircle(color = AmberDiesel, radius = wheelR * 0.08f, center = wheelPivot)
+
+                // Realistic gloved driver hands gripping left & right sides of the steering rim
+                for (side in floatArrayOf(-1f, 1f)) {
+                    val handPos = Offset(wheelPivot.x + side * wheelR, wheelPivot.y)
+                    drawCircle(
+                        color = Color(0xFF231D1A),
+                        radius = wheelR * 0.145f,
+                        center = handPos
+                    )
+                    drawCircle(
+                        color = Color(0xFF433832),
+                        radius = wheelR * 0.105f,
+                        center = handPos
+                    )
+                }
+            }
         }
     }
 }
