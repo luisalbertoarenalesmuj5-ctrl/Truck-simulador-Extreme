@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Truck Simulator Extreme</string>
+    <string name="tagline_subtitle">Física articulada real • Controles de precisión • Rutas extremas</string>
+    <string name="sign_in_with_google">Iniciar sesión con Google</string>
+    <string name="signing_in">Conectando licencia de conductor…</string>
+    <string name="sign_out">Cerrar sesión</string>
+    <string name="tab_routes">Rutas</string>
+    <string name="tab_garage">Garaje</string>
+    <string name="tab_career">Carrera</string>
+    <string name="drive_now">CONDUCIR AHORA</string>
+    <string name="pause_title">Simulación en Pausa</string>
+    <string name="resume_drive">Reanudar Ruta</string>
+    <string name="exit_to_hub">Volver al Despacho</string>
+    <string name="delivery_complete_title">¡Entrega Completada!</string>
+    <string name="error_generic_retry">Reintentar</string>
+</resources>

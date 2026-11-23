@@ -1,0 +1,159 @@
+{
+  "entities": {
+    "DriverProfile": {
+      "title": "DriverProfile",
+      "description": "Career profile, unlocked trucks, credits, and precision control settings for a truck simulator driver.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the driver."
+        },
+        "driverName": {
+          "type": "string",
+          "description": "Display name shown on the driver license card (2-40 characters)."
+        },
+        "credits": {
+          "type": "integer",
+          "description": "In-game currency earned from freight deliveries."
+        },
+        "totalDistanceKm": {
+          "type": "number",
+          "description": "Cumulative kilometers hauled across all routes."
+        },
+        "deliveriesCompleted": {
+          "type": "integer",
+          "description": "Total completed freight deliveries."
+        },
+        "xp": {
+          "type": "integer",
+          "description": "Driver career experience points."
+        },
+        "selectedTruckId": {
+          "type": "string",
+          "enum": ["nordic_fh540", "valkyrie_s730", "titan_579", "colossus_w900"],
+          "description": "Currently active tractor rig ID."
+        },
+        "unlockedTruckIds": {
+          "type": "array",
+          "description": "Bounded list of unlocked truck IDs (max 10)."
+        },
+        "steeringMode": {
+          "type": "string",
+          "enum": ["WHEEL", "BUTTONS", "TILT"],
+          "description": "Preferred precision steering control scheme."
+        },
+        "steeringSensitivity": {
+          "type": "number",
+          "description": "Steering response multiplier (0.4 to 2.0)."
+        },
+        "cameraMode": {
+          "type": "string",
+          "enum": ["CHASE", "CAB", "HOOD"],
+          "description": "Preferred simulation camera perspective."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the driver profile was created (client writes FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the driver profile was last updated (client writes FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "driverName",
+        "credits",
+        "totalDistanceKm",
+        "deliveriesCompleted",
+        "xp",
+        "selectedTruckId",
+        "unlockedTruckIds",
+        "steeringMode",
+        "steeringSensitivity",
+        "cameraMode",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DeliveryRecord": {
+      "title": "DeliveryRecord",
+      "description": "Completed freight haul log entry with telemetry and payout.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the driver."
+        },
+        "routeId": {
+          "type": "string",
+          "description": "Identifier of the completed route."
+        },
+        "routeName": {
+          "type": "string",
+          "description": "Human-readable route title."
+        },
+        "cargoName": {
+          "type": "string",
+          "description": "Description of the hauled freight."
+        },
+        "truckId": {
+          "type": "string",
+          "enum": ["nordic_fh540", "valkyrie_s730", "titan_579", "colossus_w900"],
+          "description": "Truck used during this haul."
+        },
+        "distanceKm": {
+          "type": "number",
+          "description": "Distance driven in km."
+        },
+        "earnedCredits": {
+          "type": "integer",
+          "description": "Credits awarded for the delivery."
+        },
+        "damagePercent": {
+          "type": "integer",
+          "description": "Cargo/truck damage percentage (0 to 100)."
+        },
+        "durationSeconds": {
+          "type": "integer",
+          "description": "Haul completion time in seconds."
+        },
+        "perfectDelivery": {
+          "type": "boolean",
+          "description": "True if completed with 0% damage."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the delivery was logged (client writes FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "routeId",
+        "routeName",
+        "cargoName",
+        "truckId",
+        "distanceKm",
+        "earnedCredits",
+        "damagePercent",
+        "durationSeconds",
+        "perfectDelivery",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/DriverProfile" },
+      "description": "Stores each driver's career profile, garage ownership, and control settings."
+    },
+    "/users/{userId}/deliveries/{deliveryId}": {
+      "schema": { "$ref": "#/entities/DeliveryRecord" },
+      "description": "Stores completed freight haul records for each driver."
+    }
+  }
+}
