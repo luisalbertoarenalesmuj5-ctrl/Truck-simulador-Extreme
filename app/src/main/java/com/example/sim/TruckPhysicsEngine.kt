@@ -30,7 +30,10 @@ data class ControlInputs(
     val headlightsOn: Boolean = true,
     val leftBlinker: Boolean = false,
     val rightBlinker: Boolean = false,
-    val hornPressed: Boolean = false
+    val hornPressed: Boolean = false,
+    val walkMoveX: Float = 0f,
+    val walkMoveY: Float = 0f,
+    val sprint: Boolean = false
 )
 
 data class TrafficVehicle(
@@ -62,7 +65,10 @@ data class TelemetrySnapshot(
     val parkingBrake: Boolean = false,
     val headlightsOn: Boolean = true,
     val leftBlinker: Boolean = false,
-    val rightBlinker: Boolean = false
+    val rightBlinker: Boolean = false,
+    val driverOnFoot: Boolean = false,
+    val nearCabDoor: Boolean = true,
+    val canExitTruck: Boolean = true
 )
 
 class RoadSpline(route: RouteSpec) {
@@ -238,6 +244,26 @@ class TruckPhysicsEngine(
     var finished = false
         private set
 
+    // Articulated 3D driver ("Hombre") state when walking outside the cab
+    var driverOnFoot = false
+        private set
+    var driverX = 0f
+        private set
+    var driverY = 0f
+        private set
+    var driverZ = 0f
+        private set
+    var driverYaw = 0f
+        private set
+    var driverWalkCycle = 0f
+        private set
+    var driverWalkSpeed = 0f
+        private set
+    var nearCabDoor = true
+        private set
+    private var simClock = 0f
+    private var smoothThrottle = 0f
+
     val traffic: MutableList<TrafficVehicle> = mutableListOf()
 
     private val gearRatios = floatArrayOf(
@@ -277,7 +303,51 @@ class TruckPhysicsEngine(
             finished = false
             cabPitchOffset = 0f
             cabRollOffset = 0f
+            driverOnFoot = false
+            driverX = tractorX - rightX * 1.95f + sin(tractorYaw) * 1.1f
+            driverY = tractorY
+            driverZ = tractorZ - rightZ * 1.95f - cos(tractorYaw) * 1.1f
+            driverYaw = tractorYaw
+            driverWalkCycle = 0f
+            driverWalkSpeed = 0f
+            nearCabDoor = true
+            simClock = 0f
+            smoothThrottle = 0f
             spawnTraffic()
+        }
+    }
+
+    fun exitTruckToFoot(): Boolean {
+        synchronized(stateLock) {
+            if (driverOnFoot || finished) return false
+            if (abs(speedMs) >= 1.8f) return false
+
+            speedMs = 0f
+            currentGear = 0
+            val fwdX = sin(tractorYaw)
+            val fwdZ = -cos(tractorYaw)
+            val rightX = cos(tractorYaw)
+            val rightZ = sin(tractorYaw)
+            driverX = tractorX - rightX * 1.95f + fwdX * 1.10f
+            driverZ = tractorZ - rightZ * 1.95f + fwdZ * 1.10f
+            val (_, _, roadPt) = road.project(driverX, driverZ, roadIndexHint)
+            driverY = roadPt.y
+            driverYaw = tractorYaw
+            driverWalkCycle = 0f
+            driverWalkSpeed = 0f
+            nearCabDoor = true
+            driverOnFoot = true
+            return true
+        }
+    }
+
+    fun boardTruckFromFoot(): Boolean {
+        synchronized(stateLock) {
+            if (!driverOnFoot) return false
+            if (!isNearLeftCabDoor()) return false
+            driverOnFoot = false
+            driverWalkSpeed = 0f
+            return true
         }
     }
 
@@ -326,6 +396,7 @@ class TruckPhysicsEngine(
             if (finished) return
             elapsedSimTime += dt
             blinkTimer += dt
+            simClock += dt
             collisionFlash = max(0f, collisionFlash - dt * 2.4f)
 
             val ctrl = inputs
@@ -336,6 +407,14 @@ class TruckPhysicsEngine(
     }
 
     private fun stepPhysics(dt: Float, ctrl: ControlInputs) {
+        smoothThrottle += ((if (driverOnFoot) 0f else ctrl.throttle) - smoothThrottle) * min(1f, dt * 8f)
+
+        if (driverOnFoot) {
+            stepDriverOnFoot(dt, ctrl)
+            updateTraffic(dt, checkCollisions = false, roadYawForPush = tractorYaw)
+            return
+        }
+
         val absSpeed = abs(speedMs)
 
         // Speed-sensitive precision steering: full lock at low speeds, refined progressive curve at highway speed
@@ -458,29 +537,7 @@ class TruckPhysicsEngine(
         }
 
         // Update AI Traffic & check collisions
-        for (v in traffic) {
-            v.s += (if (v.isOncoming) -v.speedMs else v.speedMs) * dt
-            if (v.s > route.simLengthMeters + 120f) v.s = 40f
-            if (v.s < 20f) v.s = route.simLengthMeters + 80f
-
-            val distAlong = abs(v.s - roadProgressMeters)
-            if (distAlong < 6.8f && abs(v.laneOffset - laneOffset) < 2.25f) {
-                val relSpeed = abs(speedMs - (if (v.isOncoming) -v.speedMs else v.speedMs))
-                if (relSpeed > 2.5f) {
-                    damageAccum = min(100f, damageAccum + relSpeed * 0.45f)
-                    collisionFlash = 1f
-                    speedMs *= 0.48f
-                    // Nudge apart laterally
-                    val push = if (laneOffset >= v.laneOffset) 0.8f else -0.8f
-                    val rightX = cos(newRoadPt.yaw)
-                    val rightZ = sin(newRoadPt.yaw)
-                    tractorX += rightX * push
-                    tractorZ += rightZ * push
-                    // Reset traffic vehicle slightly ahead so it doesn't stick
-                    v.s += if (v.isOncoming) -35f else 35f
-                }
-            }
-        }
+        updateTraffic(dt, checkCollisions = true, roadYawForPush = newRoadPt.yaw)
 
         // Engine RPM calculation
         val targetRpm = when {
@@ -498,6 +555,167 @@ class TruckPhysicsEngine(
         if (roadProgressMeters >= route.simLengthMeters) {
             finished = true
             speedMs = 0f
+        }
+    }
+
+    private fun stepDriverOnFoot(dt: Float, ctrl: ControlInputs) {
+        speedMs = 0f
+        currentGear = 0
+        rpm += (680f - rpm) * min(1f, dt * 6f)
+        cabPitchOffset *= (1f - min(1f, dt * 8f))
+        cabRollOffset *= (1f - min(1f, dt * 8f))
+
+        val turnInput = ctrl.walkMoveX.coerceIn(-1f, 1f)
+        val moveInput = ctrl.walkMoveY.coerceIn(-1f, 1f)
+
+        driverYaw = normalizeAngle(driverYaw + turnInput * 2.55f * dt)
+        val fwdX = sin(driverYaw)
+        val fwdZ = -cos(driverYaw)
+        val maxWalkSpeed = if (ctrl.sprint) 6.4f else 3.3f
+        val moveVel = moveInput * maxWalkSpeed
+
+        var nextX = driverX + fwdX * moveVel * dt
+        var nextZ = driverZ + fwdZ * moveVel * dt
+
+        // Keep the walking driver outside the tractor & trailer hulls
+        val resolvedTractor = pushOutsideOrientedBox(
+            px = nextX,
+            pz = nextZ,
+            bx = tractorX,
+            bz = tractorZ,
+            byaw = tractorYaw,
+            halfWidth = 1.55f,
+            minLocalZ = -3.0f,
+            maxLocalZ = 2.6f
+        )
+        nextX = resolvedTractor.first
+        nextZ = resolvedTractor.second
+
+        val resolvedTrailer = pushOutsideOrientedBox(
+            px = nextX,
+            pz = nextZ,
+            bx = trailerX,
+            bz = trailerZ,
+            byaw = trailerYaw,
+            halfWidth = 1.60f,
+            minLocalZ = -4.6f,
+            maxLocalZ = 5.15f
+        )
+        nextX = resolvedTrailer.first
+        nextZ = resolvedTrailer.second
+
+        // Keep driver along road/shoulder corridor near the parked rig
+        val (_, latOff, roadPt) = road.project(nextX, nextZ, roadIndexHint)
+        val maxDriverLat = roadHalfWidth + 3.2f
+        if (abs(latOff) > maxDriverLat) {
+            val sign = if (latOff > 0f) 1f else -1f
+            val excess = abs(latOff) - maxDriverLat
+            nextX -= cos(roadPt.yaw) * sign * excess
+            nextZ -= sin(roadPt.yaw) * sign * excess
+        }
+        val longitudinalDelta = roadPt.s - roadProgressMeters
+        if (abs(longitudinalDelta) > 42f) {
+            val pull = longitudinalDelta - (if (longitudinalDelta > 0f) 42f else -42f)
+            nextX -= sin(roadPt.yaw) * pull
+            nextZ += cos(roadPt.yaw) * pull
+        }
+
+        val (_, _, finalRoadPt) = road.project(nextX, nextZ, roadIndexHint)
+        driverX = nextX
+        driverZ = nextZ
+        driverY = finalRoadPt.y
+
+        val effectiveActivity = max(abs(moveVel) / 6.4f, abs(turnInput) * 0.25f).coerceIn(0f, 1f)
+        driverWalkSpeed += (effectiveActivity - driverWalkSpeed) * min(1f, dt * 10f)
+        if (effectiveActivity > 0.04f) {
+            val cycleRate = if (ctrl.sprint && abs(moveInput) > 0.2f) 11.5f else 7.2f
+            driverWalkCycle = (driverWalkCycle + cycleRate * dt) % (2f * PI.toFloat())
+        }
+        nearCabDoor = isNearLeftCabDoor()
+    }
+
+    private fun pushOutsideOrientedBox(
+        px: Float,
+        pz: Float,
+        bx: Float,
+        bz: Float,
+        byaw: Float,
+        halfWidth: Float,
+        minLocalZ: Float,
+        maxLocalZ: Float
+    ): Pair<Float, Float> {
+        val fwdX = sin(byaw)
+        val fwdZ = -cos(byaw)
+        val rightX = cos(byaw)
+        val rightZ = sin(byaw)
+
+        val dx = px - bx
+        val dz = pz - bz
+        var lx = dx * rightX + dz * rightZ
+        var lz = -(dx * fwdX + dz * fwdZ)
+
+        if (lx in -halfWidth..halfWidth && lz in minLocalZ..maxLocalZ) {
+            val dLeft = lx + halfWidth
+            val dRight = halfWidth - lx
+            val dFront = lz - minLocalZ
+            val dBack = maxLocalZ - lz
+            val minPen = min(min(dLeft, dRight), min(dFront, dBack))
+            when (minPen) {
+                dLeft -> lx = -halfWidth - 0.02f
+                dRight -> lx = halfWidth + 0.02f
+                dFront -> lz = minLocalZ - 0.02f
+                else -> lz = maxLocalZ + 0.02f
+            }
+            return Pair(
+                bx + rightX * lx - fwdX * lz,
+                bz + rightZ * lx - fwdZ * lz
+            )
+        }
+        return Pair(px, pz)
+    }
+
+    private fun leftCabDoorWorldPos(): Pair<Float, Float> {
+        val fwdX = sin(tractorYaw)
+        val fwdZ = -cos(tractorYaw)
+        val rightX = cos(tractorYaw)
+        val rightZ = sin(tractorYaw)
+        return Pair(
+            tractorX - rightX * 1.75f + fwdX * 1.10f,
+            tractorZ - rightZ * 1.75f + fwdZ * 1.10f
+        )
+    }
+
+    private fun isNearLeftCabDoor(): Boolean {
+        val (dxPos, dzPos) = leftCabDoorWorldPos()
+        val dx = driverX - dxPos
+        val dz = driverZ - dzPos
+        return (dx * dx + dz * dz) <= (4.5f * 4.5f)
+    }
+
+    private fun updateTraffic(dt: Float, checkCollisions: Boolean, roadYawForPush: Float) {
+        val absSpeed = abs(speedMs)
+        for (v in traffic) {
+            v.s += (if (v.isOncoming) -v.speedMs else v.speedMs) * dt
+            if (v.s > route.simLengthMeters + 120f) v.s = 40f
+            if (v.s < 20f) v.s = route.simLengthMeters + 80f
+
+            if (checkCollisions) {
+                val distAlong = abs(v.s - roadProgressMeters)
+                if (distAlong < 6.8f && abs(v.laneOffset - laneOffset) < 2.25f) {
+                    val relSpeed = abs(speedMs - (if (v.isOncoming) -v.speedMs else v.speedMs))
+                    if (relSpeed > 2.5f) {
+                        damageAccum = min(100f, damageAccum + relSpeed * 0.45f)
+                        collisionFlash = 1f
+                        speedMs *= 0.48f
+                        val push = if (laneOffset >= v.laneOffset) 0.8f else -0.8f
+                        val rightX = cos(roadYawForPush)
+                        val rightZ = sin(roadYawForPush)
+                        tractorX += rightX * push
+                        tractorZ += rightZ * push
+                        v.s += if (v.isOncoming) -35f else 35f
+                    }
+                }
+            }
         }
     }
 
@@ -536,6 +754,16 @@ class TruckPhysicsEngine(
             out.reversing = currentGear < 0 && speedMs < -0.1f
             out.leftBlinkerOn = inputs.leftBlinker && ((blinkTimer * 2.2f).toInt() % 2 == 0)
             out.rightBlinkerOn = inputs.rightBlinker && ((blinkTimer * 2.2f).toInt() % 2 == 0)
+            out.driverOnFoot = driverOnFoot
+            out.driverX = driverX
+            out.driverY = driverY
+            out.driverZ = driverZ
+            out.driverYaw = driverYaw
+            out.driverWalkCycle = driverWalkCycle
+            out.driverWalkSpeed = driverWalkSpeed
+            out.throttleLevel = smoothThrottle
+            out.currentGear = currentGear
+            out.simClock = simClock
             out.trafficCopy.clear()
             for (v in traffic) {
                 out.trafficCopy.add(v.copy())
@@ -575,7 +803,10 @@ class TruckPhysicsEngine(
                 parkingBrake = ctrl.parkingBrake,
                 headlightsOn = ctrl.headlightsOn,
                 leftBlinker = ctrl.leftBlinker,
-                rightBlinker = ctrl.rightBlinker
+                rightBlinker = ctrl.rightBlinker,
+                driverOnFoot = driverOnFoot,
+                nearCabDoor = nearCabDoor,
+                canExitTruck = !driverOnFoot && abs(speedMs) < 1.8f
             )
         }
     }
@@ -613,5 +844,15 @@ class RenderSnapshot {
     var reversing = false
     var leftBlinkerOn = false
     var rightBlinkerOn = false
+    var driverOnFoot = false
+    var driverX = 0f
+    var driverY = 0f
+    var driverZ = 0f
+    var driverYaw = 0f
+    var driverWalkCycle = 0f
+    var driverWalkSpeed = 0f
+    var throttleLevel = 0f
+    var currentGear = 0
+    var simClock = 0f
     val trafficCopy = ArrayList<TrafficVehicle>(20)
 }

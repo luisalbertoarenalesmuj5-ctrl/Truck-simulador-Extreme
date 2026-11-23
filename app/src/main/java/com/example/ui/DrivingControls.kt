@@ -22,10 +22,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.DirectionsRun
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Highlight
+import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -544,3 +549,202 @@ fun CurveRadarIndicator(
         }
     }
 }
+
+@Composable
+fun DriverWalkJoystick(
+    onMoveChanged: (x: Float, y: Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var knobNormX by remember { mutableFloatStateOf(0f) }
+    var knobNormY by remember { mutableFloatStateOf(0f) } // +1 up/forward, -1 down/back
+    var active by remember { mutableStateOf(false) }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(156.dp)
+            .testTag("driver_walk_joystick")
+            .pointerInput(Unit) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val maxR = (minOf(size.width, size.height) * 0.36f).coerceAtLeast(1f)
+                awaitPointerEventScope {
+                    while (true) {
+                        val downEv = awaitPointerEvent()
+                        val firstDown = downEv.changes.firstOrNull { it.pressed } ?: continue
+                        active = true
+
+                        fun updateFrom(pos: Offset) {
+                            val dx = pos.x - center.x
+                            val dy = pos.y - center.y
+                            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                            val clamped = dist.coerceAtMost(maxR)
+                            val scale = if (dist > 0.001f) clamped / dist else 0f
+                            knobNormX = ((dx * scale) / maxR).coerceIn(-1f, 1f)
+                            knobNormY = ((-(dy * scale)) / maxR).coerceIn(-1f, 1f)
+                            onMoveChanged(knobNormX, knobNormY)
+                        }
+
+                        updateFrom(firstDown.position)
+                        firstDown.consume()
+
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            val tracked = ev.changes.firstOrNull { it.id == firstDown.id }
+                            if (tracked == null || !tracked.pressed) {
+                                active = false
+                                knobNormX = 0f
+                                knobNormY = 0f
+                                onMoveChanged(0f, 0f)
+                                break
+                            }
+                            updateFrom(tracked.position)
+                            tracked.consume()
+                        }
+                    }
+                }
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val outerR = size.minDimension * 0.45f
+            val travelR = size.minDimension * 0.34f
+
+            // Outer translucent steel ring
+            drawCircle(
+                color = ObsidianNight.copy(alpha = 0.72f),
+                radius = outerR,
+                center = center
+            )
+            drawCircle(
+                color = if (active) AmberDiesel else GunmetalBorder,
+                radius = outerR,
+                center = center,
+                style = Stroke(width = 4f)
+            )
+            // Crosshair guide lines
+            drawLine(
+                color = Color.White.copy(alpha = 0.14f),
+                start = Offset(center.x - outerR * 0.72f, center.y),
+                end = Offset(center.x + outerR * 0.72f, center.y),
+                strokeWidth = 2f
+            )
+            drawLine(
+                color = Color.White.copy(alpha = 0.14f),
+                start = Offset(center.x, center.y - outerR * 0.72f),
+                end = Offset(center.x, center.y + outerR * 0.72f),
+                strokeWidth = 2f
+            )
+
+            val knobPos = Offset(
+                center.x + knobNormX * travelR,
+                center.y - knobNormY * travelR
+            )
+            drawCircle(
+                color = if (active) AmberDiesel else CabMetal,
+                radius = outerR * 0.38f,
+                center = knobPos
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = if (active) 0.9f else 0.35f),
+                radius = outerR * 0.38f,
+                center = knobPos,
+                style = Stroke(width = 3f)
+            )
+        }
+        if (!active) {
+            Icon(
+                imageVector = Icons.Filled.DirectionsWalk,
+                contentDescription = "Joystick para caminar",
+                tint = AmberDiesel,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun OnFootActionCluster(
+    sprint: Boolean,
+    nearCabDoor: Boolean,
+    onSprintChanged: (Boolean) -> Unit,
+    onBoardTruck: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Hold-to-sprint pad
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(width = 138.dp, height = 52.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (sprint) AmberDiesel.copy(alpha = 0.88f) else SteelSlate.copy(alpha = 0.88f))
+                .border(1.5.dp, if (sprint) AmberDiesel else GunmetalBorder, RoundedCornerShape(14.dp))
+                .testTag("btn_driver_sprint")
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            onSprintChanged(true)
+                            tryAwaitRelease()
+                            onSprintChanged(false)
+                        }
+                    )
+                }
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DirectionsRun,
+                    contentDescription = "Correr",
+                    tint = if (sprint) ObsidianNight else AmberDiesel,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = if (sprint) "CORRIENDO" else "CORRER",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (sprint) ObsidianNight else Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // Board truck button
+        Button(
+            onClick = onBoardTruck,
+            enabled = nearCabDoor,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = EmeraldCargo,
+                contentColor = ObsidianNight,
+                disabledContainerColor = SteelSlate.copy(alpha = 0.82f),
+                disabledContentColor = Color(0xFF9FB0C3)
+            ),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .height(56.dp)
+                .border(
+                    width = 1.5.dp,
+                    color = if (nearCabDoor) EmeraldCargo else GunmetalBorder,
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .testTag("btn_board_truck")
+        ) {
+            Icon(
+                imageVector = Icons.Filled.LocalShipping,
+                contentDescription = "Subir al camión",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (nearCabDoor) "SUBIR AL CAMIÓN" else "ACÉRCATE A LA PUERTA",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+

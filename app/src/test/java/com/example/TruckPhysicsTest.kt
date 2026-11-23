@@ -65,4 +65,46 @@ class TruckPhysicsTest {
         }
         assertEquals(0, engine.readTelemetry().speedKmh)
     }
+
+    @Test
+    fun driverCanExitTruckWhenStoppedWalkAndBoardBack() {
+        val truck = TruckCatalog.byId("valkyrie_s730")
+        val route = RouteCatalog.byId("alpine_pass")
+        val engine = TruckPhysicsEngine(truck, route)
+
+        // Accelerate above 1.8 m/s — exiting should be blocked while rolling
+        engine.inputs = ControlInputs(throttle = 1.0f)
+        repeat(180) {
+            engine.step(1f / 60f, paused = false)
+        }
+        assertTrue("Expected exit to be blocked while moving fast", !engine.exitTruckToFoot())
+        assertTrue(!engine.readTelemetry().driverOnFoot)
+
+        // Reset to stationary and step out into On-Foot Hombre mode
+        engine.reset()
+        assertTrue("Expected exit to succeed when stopped", engine.exitTruckToFoot())
+        val initialX = engine.driverX
+        val initialZ = engine.driverZ
+        assertTrue(engine.readTelemetry().driverOnFoot)
+        assertTrue(engine.readTelemetry().nearCabDoor)
+
+        // Walk forward + sprint for 3 seconds away from the cab door
+        engine.inputs = ControlInputs(walkMoveX = 0f, walkMoveY = 1.0f, sprint = true)
+        repeat(180) {
+            engine.step(1f / 60f, paused = false)
+        }
+        assertTrue("Expected driver to walk forward", engine.driverZ != initialZ || engine.driverX != initialX)
+        assertTrue("Expected walk cycle to advance", engine.driverWalkCycle > 0f)
+        assertTrue("Expected driver to be far from cab door after sprinting away", !engine.readTelemetry().nearCabDoor)
+        assertTrue("Expected boarding to fail when far from cab door", !engine.boardTruckFromFoot())
+
+        // Walk back toward the cab door
+        engine.inputs = ControlInputs(walkMoveX = 0f, walkMoveY = -1.0f, sprint = true)
+        repeat(180) {
+            engine.step(1f / 60f, paused = false)
+        }
+        assertTrue("Expected driver to be back near cab door", engine.readTelemetry().nearCabDoor)
+        assertTrue("Expected driver to board truck near cab door", engine.boardTruckFromFoot())
+        assertTrue(!engine.readTelemetry().driverOnFoot)
+    }
 }

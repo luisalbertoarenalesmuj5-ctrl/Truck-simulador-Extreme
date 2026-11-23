@@ -12,9 +12,12 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 class TruckSimRenderer(
     private val physics: TruckPhysicsEngine,
@@ -22,14 +25,18 @@ class TruckSimRenderer(
 ) : GLSurfaceView.Renderer {
 
     @Volatile
-    var cameraMode: CameraMode = CameraMode.CHASE
+    var cameraMode: CameraMode = CameraMode.CAB
 
     private val snapshot = RenderSnapshot()
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
     private val modelMatrix = FloatArray(16)
+    private val baseMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
     private val tempMatrix = FloatArray(16)
+
+    private var surfaceAspect = 1.6f
+    private var activeFovY = 66f
 
     private var meshProgram = 0
     private var roadProgram = 0
@@ -45,15 +52,31 @@ class TruckSimRenderer(
     private lateinit var rightBlinkerMesh: GlMesh
     private lateinit var steeringWheelMesh: GlMesh
     private lateinit var cockpitFrameMesh: GlMesh
+    private lateinit var gearStickMesh: GlMesh
+    private lateinit var wiperArmMesh: GlMesh
+    private lateinit var forearmMesh: GlMesh
+    private lateinit var gloveHandMesh: GlMesh
+
+    // Articulated 3D driver ("Hombre") meshes
+    private lateinit var driverTorsoMesh: GlMesh
+    private lateinit var driverHeadMesh: GlMesh
+    private lateinit var driverArmMesh: GlMesh
+    private lateinit var driverLegMesh: GlMesh
+
+    // Traffic & World props
     private lateinit var trafficCarMesh: GlMesh
     private lateinit var trafficTruckMesh: GlMesh
     private lateinit var treeMesh: GlMesh
     private lateinit var gantryMesh: GlMesh
     private lateinit var guardrailPostMesh: GlMesh
+    private lateinit var lightPoleMesh: GlMesh
+    private lateinit var chevronSignMesh: GlMesh
+    private lateinit var exhaustPuffMesh: GlMesh
+
     private lateinit var skyDomeBuffer: FloatBuffer
     private var skyVertexCount = 0
 
-    // Dynamic road ribbon buffer (reused without heap allocations)
+    // Dynamic road ribbon & terrain buffers (reused without heap allocations)
     private lateinit var roadBuffer: FloatBuffer
     private var roadVertexCount = 0
     private lateinit var terrainBuffer: FloatBuffer
@@ -71,6 +94,7 @@ class TruckSimRenderer(
     private var smoothLookY = 2.0f
     private var smoothLookZ = -20f
     private var camInitialized = false
+    private var lastOnFootCam = false
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         val skyHorizon = skyHorizonRgb()
@@ -86,22 +110,30 @@ class TruckSimRenderer(
         buildMeshes()
         buildSkyDome()
 
-        // Allocate dynamic buffers for visible road window (~140 segments = ~840 vertices)
+        // Allocate dynamic buffers for visible road window
         roadBuffer = allocateFloatBuffer(150 * 6 * 8) // x,y,z, nx,ny,nz, u, s
-        terrainBuffer = allocateFloatBuffer(150 * 12 * 10)
+        terrainBuffer = allocateFloatBuffer(150 * 24 * 10)
         railBuffer = allocateFloatBuffer(150 * 12 * 10)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
-        val aspect = width.toFloat() / height.coerceAtLeast(1)
-        Matrix.perspectiveM(projMatrix, 0, 56f, aspect, 0.2f, 520f)
+        surfaceAspect = width.toFloat() / height.coerceAtLeast(1)
+        activeFovY = if (cameraMode == CameraMode.CAB && !snapshot.driverOnFoot) 66f else 56f
+        Matrix.perspectiveM(projMatrix, 0, activeFovY, surfaceAspect, 0.16f, 540f)
     }
 
     override fun onDrawFrame(gl: GL10?) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
         physics.readRenderState(snapshot)
+
+        val desiredFov = if (cameraMode == CameraMode.CAB && !snapshot.driverOnFoot) 66f else 56f
+        if (abs(desiredFov - activeFovY) > 0.5f) {
+            activeFovY = desiredFov
+            Matrix.perspectiveM(projMatrix, 0, activeFovY, surfaceAspect, 0.16f, 540f)
+        }
+
         updateCamera()
         rebuildRoadWindow()
 
@@ -112,24 +144,79 @@ class TruckSimRenderer(
         GLES20.glDepthMask(true)
         GLES20.glEnable(GLES20.GL_CULL_FACE)
 
-        // 2. Draw Terrain & Guardrails
+        // 2. Draw Terrain, Mountains & Guardrails
         drawDynamicColorMesh(terrainBuffer, terrainVertexCount)
         drawDynamicColorMesh(railBuffer, railVertexCount)
 
         // 3. Draw Procedural Asphalt Road with real-time dual headlight cones
         drawRoadRibbon()
 
-        // 4. Draw Roadside Scenery (Trees / Gantries / Guardrail Posts)
+        // 4. Draw Roadside Scenery (Trees, Light Poles, Chevrons, Gantries, Posts)
         drawSceneryProps()
 
         // 5. Draw AI Traffic
         drawTraffic()
 
-        // 6. Draw Player Tractor + Articulated Trailer
+        // 6. Draw Player Tractor + Articulated Trailer + Exhaust + Driver
         drawPlayerTruck()
+
+        // 7. Draw Walking Driver Character in 3rd-person On-Foot mode
+        if (snapshot.driverOnFoot) {
+            drawDriverOnFoot()
+        }
     }
 
+    private fun cockpitEyeLocalZ(): Float =
+        if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) -1.06f else -0.68f
+
     private fun updateCamera() {
+        if (snapshot.driverOnFoot) {
+            val dx = snapshot.driverX
+            val dy = snapshot.driverY
+            val dz = snapshot.driverZ
+            val yaw = snapshot.driverYaw
+            val fwdX = sin(yaw)
+            val fwdZ = -cos(yaw)
+            val rightX = cos(yaw)
+            val rightZ = sin(yaw)
+
+            val bob = abs(sin(snapshot.driverWalkCycle)) * 0.05f * snapshot.driverWalkSpeed
+            val targetCamX = dx - fwdX * 4.2f + rightX * 0.55f
+            val targetCamY = dy + 2.25f + bob * 0.5f
+            val targetCamZ = dz - fwdZ * 4.2f + rightZ * 0.55f
+            val targetLookX = dx + fwdX * 5.0f
+            val targetLookY = dy + 1.38f
+            val targetLookZ = dz + fwdZ * 5.0f
+
+            if (!camInitialized || !lastOnFootCam) {
+                smoothCamX = targetCamX
+                smoothCamY = targetCamY
+                smoothCamZ = targetCamZ
+                smoothLookX = targetLookX
+                smoothLookY = targetLookY
+                smoothLookZ = targetLookZ
+                camInitialized = true
+                lastOnFootCam = true
+            } else {
+                val alpha = 0.22f
+                smoothCamX += (targetCamX - smoothCamX) * alpha
+                smoothCamY += (targetCamY - smoothCamY) * alpha
+                smoothCamZ += (targetCamZ - smoothCamZ) * alpha
+                smoothLookX += (targetLookX - smoothLookX) * 0.28f
+                smoothLookY += (targetLookY - smoothLookY) * 0.28f
+                smoothLookZ += (targetLookZ - smoothLookZ) * 0.28f
+            }
+
+            Matrix.setLookAtM(
+                viewMatrix, 0,
+                smoothCamX, smoothCamY, smoothCamZ,
+                smoothLookX, smoothLookY, smoothLookZ,
+                0f, 1f, 0f
+            )
+            return
+        }
+
+        lastOnFootCam = false
         val tx = snapshot.tractorX
         val ty = snapshot.tractorY
         val tz = snapshot.tractorZ
@@ -157,13 +244,20 @@ class TruckSimRenderer(
                 targetLookZ = tz + fwdZ * 16f
             }
             CameraMode.CAB -> {
-                // Driver seat position (left side of cab)
-                targetCamX = tx - rightX * 0.52f + fwdX * 1.15f
-                targetCamY = ty + 2.65f + snapshot.cabPitchOffset * 0.8f
-                targetCamZ = tz - rightZ * 0.52f + fwdZ * 1.15f
-                targetLookX = targetCamX + fwdX * 35f
-                targetLookY = targetCamY - 0.8f + sin(snapshot.tractorPitch) * 10f
-                targetLookZ = targetCamZ + fwdZ * 35f
+                // Realistic driver eye position looking over steering wheel, gauges, GPS & hood
+                val eyeLocalZ = cockpitEyeLocalZ()
+                val roadVibe = sin(snapshot.simClock * 26f) * 0.005f *
+                    (abs(snapshot.speedMs) / 22f).coerceIn(0f, 1f)
+                val lookYaw = yaw + snapshot.steerWheelAngleRad * 0.22f
+                val lookFwdX = sin(lookYaw)
+                val lookFwdZ = -cos(lookYaw)
+
+                targetCamX = tx - rightX * 0.52f - fwdX * eyeLocalZ
+                targetCamY = ty + 2.63f + snapshot.cabPitchOffset * 0.75f + roadVibe
+                targetCamZ = tz - rightZ * 0.52f - fwdZ * eyeLocalZ
+                targetLookX = targetCamX + lookFwdX * 28f
+                targetLookY = targetCamY - 3.35f + sin(snapshot.tractorPitch + snapshot.cabPitchOffset) * 24f
+                targetLookZ = targetCamZ + lookFwdZ * 28f
             }
             CameraMode.HOOD -> {
                 targetCamX = tx + fwdX * 2.4f
@@ -246,6 +340,7 @@ class TruckSimRenderer(
         railVertexCount = 0
 
         val terrainRgb = terrainRgb()
+        val mountainRgb = mountainRgb()
         val shoulderRgb = floatArrayOf(0.28f, 0.27f, 0.24f)
 
         for (i in startIdx until endIdx) {
@@ -268,11 +363,11 @@ class TruckSimRenderer(
             putRoadVert(rx1, p1.y, rz1, 0f, 1f, 0f, 1f, p1.s)
             putRoadVert(rx0, p0.y, rz0, 0f, 1f, 0f, 1f, p0.s)
 
-            // Left & right terrain banks + distant ridges
-            val leftEdge0x = p0.x - r0x * (hw + 65f); val leftEdge0z = p0.z - r0z * (hw + 65f)
-            val leftEdge1x = p1.x - r1x * (hw + 65f); val leftEdge1z = p1.z - r1z * (hw + 65f)
-            val ridgeH0L = if (env == EnvironmentTheme.COASTAL_SUNSET) -1.2f else 5.5f + 4.5f * sin(p0.s * 0.03f)
-            val ridgeH1L = if (env == EnvironmentTheme.COASTAL_SUNSET) -1.2f else 5.5f + 4.5f * sin(p1.s * 0.03f)
+            // Left & right immediate terrain banks
+            val leftEdge0x = p0.x - r0x * (hw + 52f); val leftEdge0z = p0.z - r0z * (hw + 52f)
+            val leftEdge1x = p1.x - r1x * (hw + 52f); val leftEdge1z = p1.z - r1z * (hw + 52f)
+            val ridgeH0L = if (env == EnvironmentTheme.COASTAL_SUNSET) -1.2f else 4.5f + 3.5f * sin(p0.s * 0.03f)
+            val ridgeH1L = if (env == EnvironmentTheme.COASTAL_SUNSET) -1.2f else 4.5f + 3.5f * sin(p1.s * 0.03f)
             val leftColor = if (env == EnvironmentTheme.COASTAL_SUNSET) floatArrayOf(0.06f, 0.22f, 0.36f) else terrainRgb
 
             putColorQuad(
@@ -285,10 +380,10 @@ class TruckSimRenderer(
             )
             terrainVertexCount += 6
 
-            val rightEdge0x = p0.x + r0x * (hw + 65f); val rightEdge0z = p0.z + r0z * (hw + 65f)
-            val rightEdge1x = p1.x + r1x * (hw + 65f); val rightEdge1z = p1.z + r1z * (hw + 65f)
-            val ridgeH0R = 6.0f + 5.2f * cos(p0.s * 0.027f)
-            val ridgeH1R = 6.0f + 5.2f * cos(p1.s * 0.027f)
+            val rightEdge0x = p0.x + r0x * (hw + 52f); val rightEdge0z = p0.z + r0z * (hw + 52f)
+            val rightEdge1x = p1.x + r1x * (hw + 52f); val rightEdge1z = p1.z + r1z * (hw + 52f)
+            val ridgeH0R = 4.8f + 4.2f * cos(p0.s * 0.027f)
+            val ridgeH1R = 4.8f + 4.2f * cos(p1.s * 0.027f)
             putColorQuad(
                 terrainBuffer,
                 rx0, p0.y - 0.06f, rz0,
@@ -296,6 +391,62 @@ class TruckSimRenderer(
                 rightEdge1x, p1.y + ridgeH1R, rightEdge1z,
                 rightEdge0x, p0.y + ridgeH0R, rightEdge0z,
                 terrainRgb[0] * 0.92f, terrainRgb[1] * 0.92f, terrainRgb[2] * 0.92f, 0f
+            )
+            terrainVertexCount += 6
+
+            // Distant monumental mountain silhouettes along the flanks
+            if (env != EnvironmentTheme.COASTAL_SUNSET) {
+                val farL0x = p0.x - r0x * (hw + 145f); val farL0z = p0.z - r0z * (hw + 145f)
+                val farL1x = p1.x - r1x * (hw + 145f); val farL1z = p1.z - r1z * (hw + 145f)
+                val peakL0 = 18f + 13f * sin(p0.s * 0.017f) + 6f * cos(p0.s * 0.041f)
+                val peakL1 = 18f + 13f * sin(p1.s * 0.017f) + 6f * cos(p1.s * 0.041f)
+                putColorQuad(
+                    terrainBuffer,
+                    farL0x, p0.y + peakL0, farL0z,
+                    farL1x, p1.y + peakL1, farL1z,
+                    leftEdge1x, p1.y + ridgeH1L, leftEdge1z,
+                    leftEdge0x, p0.y + ridgeH0L, leftEdge0z,
+                    mountainRgb[0], mountainRgb[1], mountainRgb[2], 0f
+                )
+                terrainVertexCount += 6
+            }
+
+            val farR0x = p0.x + r0x * (hw + 145f); val farR0z = p0.z + r0z * (hw + 145f)
+            val farR1x = p1.x + r1x * (hw + 145f); val farR1z = p1.z + r1z * (hw + 145f)
+            val peakR0 = 20f + 14f * cos(p0.s * 0.015f) + 7f * sin(p0.s * 0.036f)
+            val peakR1 = 20f + 14f * cos(p1.s * 0.015f) + 7f * sin(p1.s * 0.036f)
+            putColorQuad(
+                terrainBuffer,
+                rightEdge0x, p0.y + ridgeH0R, rightEdge0z,
+                rightEdge1x, p1.y + ridgeH1R, rightEdge1z,
+                farR1x, p1.y + peakR1, farR1z,
+                farR0x, p0.y + peakR0, farR0z,
+                mountainRgb[0] * 0.94f, mountainRgb[1] * 0.94f, mountainRgb[2] * 0.94f, 0f
+            )
+            terrainVertexCount += 6
+
+            // Shoulder gravel lips on both sides
+            val sx0 = p0.x + r0x * (hw + 1.5f); val sz0 = p0.z + r0z * (hw + 1.5f)
+            val sx1 = p1.x + r1x * (hw + 1.5f); val sz1 = p1.z + r1z * (hw + 1.5f)
+            putColorQuad(
+                terrainBuffer,
+                rx0, p0.y - 0.03f, rz0,
+                rx1, p1.y - 0.03f, rz1,
+                sx1, p1.y - 0.05f, sz1,
+                sx0, p0.y - 0.05f, sz0,
+                shoulderRgb[0], shoulderRgb[1], shoulderRgb[2], 0f
+            )
+            terrainVertexCount += 6
+
+            val slx0 = p0.x - r0x * (hw + 1.5f); val slz0 = p0.z - r0z * (hw + 1.5f)
+            val slx1 = p1.x - r1x * (hw + 1.5f); val slz1 = p1.z - r1z * (hw + 1.5f)
+            putColorQuad(
+                terrainBuffer,
+                slx0, p0.y - 0.05f, slz0,
+                slx1, p1.y - 0.05f, slz1,
+                lx1, p1.y - 0.03f, lz1,
+                lx0, p0.y - 0.03f, lz0,
+                shoulderRgb[0], shoulderRgb[1], shoulderRgb[2], 0f
             )
             terrainVertexCount += 6
 
@@ -324,19 +475,6 @@ class TruckSimRenderer(
                 0.70f, 0.74f, 0.78f, 0f
             )
             railVertexCount += 6
-
-            // Shoulder gravel lip
-            val sx0 = p0.x + r0x * (hw + 1.4f); val sz0 = p0.z + r0z * (hw + 1.4f)
-            val sx1 = p1.x + r1x * (hw + 1.4f); val sz1 = p1.z + r1z * (hw + 1.4f)
-            putColorQuad(
-                terrainBuffer,
-                rx0, p0.y - 0.03f, rz0,
-                rx1, p1.y - 0.03f, rz1,
-                sx1, p1.y - 0.05f, sz1,
-                sx0, p0.y - 0.05f, sz0,
-                shoulderRgb[0], shoulderRgb[1], shoulderRgb[2], 0f
-            )
-            terrainVertexCount += 6
         }
 
         roadBuffer.position(0)
@@ -358,7 +496,6 @@ class TruckSimRenderer(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(roadProgram, "uAmbient"), ambientLight())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(roadProgram, "uWetness"), if (env == EnvironmentTheme.STORM_SUMMIT || env == EnvironmentTheme.COASTAL_SUNSET) 0.7f else 0.2f)
 
-        // Pass tractor world position & forward vector for live dual headlight projection on the asphalt
         val fwdX = sin(snapshot.tractorYaw)
         val fwdZ = -cos(snapshot.tractorYaw)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(roadProgram, "uTruckPos"), snapshot.tractorX, snapshot.tractorY, snapshot.tractorZ)
@@ -412,6 +549,33 @@ class TruckSimRenderer(
                 drawMesh(guardrailPostMesh, modelMatrix)
             }
 
+            // Highway street lights every 11 segments
+            if (i % 11 == 4) {
+                val off = physics.roadHalfWidth + 1.15f
+                val leftSide = (i / 11) % 2 == 0
+                if (leftSide) {
+                    setModelMatrix(pt.x - rightX * off, pt.y, pt.z - rightZ * off, pt.yaw, 0f, 0f)
+                } else {
+                    setModelMatrix(pt.x + rightX * off, pt.y, pt.z + rightZ * off, pt.yaw + PI.toFloat(), 0f, 0f)
+                }
+                drawMesh(lightPoleMesh, modelMatrix)
+            }
+
+            // Curve warning chevron posts on sharper curves
+            if (i % 4 == 0 && abs(pt.curvature) > 0.0065f) {
+                val outsideSign = if (pt.curvature > 0f) -1f else 1f
+                val off = physics.roadHalfWidth + 0.9f
+                setModelMatrix(
+                    pt.x + rightX * off * outsideSign,
+                    pt.y,
+                    pt.z + rightZ * off * outsideSign,
+                    pt.yaw,
+                    0f,
+                    0f
+                )
+                drawMesh(chevronSignMesh, modelMatrix)
+            }
+
             // Trees / Roadside rocks every 5 segments
             if (i % 5 == 0) {
                 val distR = physics.roadHalfWidth + 4.8f + ((i * 7) % 6)
@@ -454,10 +618,18 @@ class TruckSimRenderer(
 
     private fun drawPlayerTruck() {
         setupMeshShaderCommon()
+        val isInteriorCabView = !snapshot.driverOnFoot && cameraMode == CameraMode.CAB
 
-        // 1. Trailer (always visible in Chase & mirrors; skip cab interior clipping in Cab mode)
-        if (cameraMode != CameraMode.CAB) {
-            setModelMatrix(snapshot.trailerX, snapshot.tractorY, snapshot.trailerZ, snapshot.trailerYaw, snapshot.tractorPitch, snapshot.cabRollOffset * 0.6f)
+        // 1. Trailer (always visible outside or in CHASE/HOOD/On-Foot)
+        if (!isInteriorCabView) {
+            setModelMatrix(
+                snapshot.trailerX,
+                snapshot.tractorY,
+                snapshot.trailerZ,
+                snapshot.trailerYaw,
+                snapshot.tractorPitch,
+                snapshot.cabRollOffset * 0.6f
+            )
             drawMesh(trailerMesh, modelMatrix)
             drawTrailerWheels(snapshot.trailerX, snapshot.tractorY, snapshot.trailerZ, snapshot.trailerYaw)
             if (snapshot.braking) {
@@ -465,28 +637,9 @@ class TruckSimRenderer(
             }
         }
 
-        // 2. Tractor Body
-        if (cameraMode == CameraMode.CAB) {
-            // Render realistic Cockpit Interior + rotating 3D steering wheel
-            setModelMatrix(
-                snapshot.tractorX,
-                snapshot.tractorY,
-                snapshot.tractorZ,
-                snapshot.tractorYaw,
-                snapshot.tractorPitch + snapshot.cabPitchOffset,
-                snapshot.cabRollOffset
-            )
-            drawMesh(cockpitFrameMesh, modelMatrix)
-
-            // Rotating steering wheel mounted in front of driver (-0.52f X, 2.08f Y, -1.62f Z)
-            Matrix.setIdentityM(modelMatrix, 0)
-            Matrix.translateM(modelMatrix, 0, snapshot.tractorX, snapshot.tractorY, snapshot.tractorZ)
-            Matrix.rotateM(modelMatrix, 0, -Math.toDegrees(snapshot.tractorYaw.toDouble()).toFloat(), 0f, 1f, 0f)
-            Matrix.rotateM(modelMatrix, 0, Math.toDegrees((snapshot.tractorPitch + snapshot.cabPitchOffset).toDouble()).toFloat(), 1f, 0f, 0f)
-            Matrix.translateM(modelMatrix, 0, -0.52f, 2.08f, -1.62f)
-            Matrix.rotateM(modelMatrix, 0, -28f, 1f, 0f, 0f)
-            Matrix.rotateM(modelMatrix, 0, -Math.toDegrees((snapshot.steerWheelAngleRad * 4.5f).toDouble()).toFloat(), 0f, 0f, 1f)
-            drawMesh(steeringWheelMesh, modelMatrix)
+        // 2. Tractor Body / Realistic Cockpit
+        if (isInteriorCabView) {
+            drawVistaRealCockpit()
         } else {
             setModelMatrix(
                 snapshot.tractorX,
@@ -507,6 +660,243 @@ class TruckSimRenderer(
                 drawMesh(rightBlinkerMesh, modelMatrix)
             }
             drawTractorWheels()
+            drawExhaustSmoke()
+
+            // When seated inside the rig, draw the 3D driver behind the framed windshield
+            if (!snapshot.driverOnFoot) {
+                drawSeatedDriverInCab()
+            }
+        }
+    }
+
+    private fun drawVistaRealCockpit() {
+        setModelMatrix(
+            snapshot.tractorX,
+            snapshot.tractorY,
+            snapshot.tractorZ,
+            snapshot.tractorYaw,
+            snapshot.tractorPitch + snapshot.cabPitchOffset,
+            snapshot.cabRollOffset
+        )
+        System.arraycopy(modelMatrix, 0, baseMatrix, 0, 16)
+        drawMesh(cockpitFrameMesh, baseMatrix)
+
+        // Animated gear shifter lever on center console
+        val gearTiltDeg = when {
+            snapshot.currentGear < 0 -> -14f
+            snapshot.currentGear == 0 -> 0f
+            snapshot.currentGear % 2 == 1 -> 12f
+            else -> -10f
+        }
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        val shifterZ = if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) -1.68f else -1.32f
+        Matrix.translateM(modelMatrix, 0, -0.06f, 1.98f, shifterZ)
+        Matrix.rotateM(modelMatrix, 0, gearTiltDeg, 1f, 0f, 0f)
+        drawMesh(gearStickMesh, modelMatrix)
+
+        // Animated windshield wipers (sweeping during Storm Summit, parked otherwise)
+        val wiperAngle = if (env == EnvironmentTheme.STORM_SUMMIT) {
+            24f + sin(snapshot.simClock * 3.8f) * 22f
+        } else {
+            5f
+        }
+        val wiperZ = if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) -2.26f else -1.80f
+        for (wx in floatArrayOf(-0.62f, 0.25f)) {
+            System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+            Matrix.translateM(modelMatrix, 0, wx, 2.34f, wiperZ)
+            Matrix.rotateM(modelMatrix, 0, wiperAngle, 0f, 0f, 1f)
+            drawMesh(wiperArmMesh, modelMatrix)
+        }
+
+        // Rotating 3D Steering Wheel positioned cleanly in driver's lower field of view
+        val wheelX = -0.52f
+        val wheelY = 2.28f
+        val wheelZ = cockpitEyeLocalZ() - 0.76f
+        val wheelTiltDeg = -25f
+        val wheelSpinRad = -snapshot.steerWheelAngleRad * 4.2f
+        val wheelSpinDeg = Math.toDegrees(wheelSpinRad.toDouble()).toFloat()
+
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, wheelX, wheelY, wheelZ)
+        Matrix.rotateM(modelMatrix, 0, wheelTiltDeg, 1f, 0f, 0f)
+        Matrix.rotateM(modelMatrix, 0, wheelSpinDeg, 0f, 0f, 1f)
+        drawMesh(steeringWheelMesh, modelMatrix)
+
+        // First-person 3D driver forearms & gloved hands gripping the rotating rim!
+        val rimR = 0.20f
+        val tiltRad = Math.toRadians(wheelTiltDeg.toDouble()).toFloat()
+        val handRotRad = wheelSpinRad.coerceIn(-1.45f, 1.45f)
+
+        val lLocalX = -cos(handRotRad) * rimR
+        val lLocalY = -sin(handRotRad) * rimR
+        val rLocalX = cos(handRotRad) * rimR
+        val rLocalY = sin(handRotRad) * rimR
+
+        // Transform local rim grip (lx, ly, 0.02) by X-tilt into cab space
+        fun rimToCab(lx: Float, ly: Float, lz: Float): Triple<Float, Float, Float> {
+            val ty = ly * cos(tiltRad) - lz * sin(tiltRad)
+            val tz = ly * sin(tiltRad) + lz * cos(tiltRad)
+            return Triple(wheelX + lx, wheelY + ty, wheelZ + tz)
+        }
+
+        val lGrip = rimToCab(lLocalX, lLocalY, 0.025f)
+        val rGrip = rimToCab(rLocalX, rLocalY, 0.025f)
+        val lElbow = Triple(-0.78f, 2.16f, cockpitEyeLocalZ() - 0.16f)
+        val rElbow = Triple(-0.24f, 2.16f, cockpitEyeLocalZ() - 0.16f)
+
+        drawCabLimb(lElbow.first, lElbow.second, lElbow.third, lGrip.first, lGrip.second, lGrip.third)
+        drawCabLimb(rElbow.first, rElbow.second, rElbow.third, rGrip.first, rGrip.second, rGrip.third)
+
+        // Draw gloved hands right at the grip points
+        for (grip in arrayOf(lGrip, rGrip)) {
+            System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+            Matrix.translateM(modelMatrix, 0, grip.first, grip.second, grip.third)
+            Matrix.rotateM(modelMatrix, 0, wheelTiltDeg, 1f, 0f, 0f)
+            Matrix.rotateM(modelMatrix, 0, wheelSpinDeg * 0.45f, 0f, 0f, 1f)
+            drawMesh(gloveHandMesh, modelMatrix)
+        }
+    }
+
+    private fun drawCabLimb(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
+        val dx = x1 - x0
+        val dy = y1 - y0
+        val dz = z1 - z0
+        val len = sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(0.05f)
+        val yawDeg = Math.toDegrees(atan2(dx.toDouble(), -dz.toDouble())).toFloat()
+        val horiz = sqrt(dx * dx + dz * dz)
+        val pitchDeg = Math.toDegrees(atan2(dy.toDouble(), horiz.toDouble())).toFloat()
+
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, x0, y0, z0)
+        Matrix.rotateM(modelMatrix, 0, -yawDeg, 0f, 1f, 0f)
+        Matrix.rotateM(modelMatrix, 0, pitchDeg, 1f, 0f, 0f)
+        Matrix.scaleM(modelMatrix, 0, 1f, 1f, len)
+        drawMesh(forearmMesh, modelMatrix)
+    }
+
+    private fun drawSeatedDriverInCab() {
+        setModelMatrix(
+            snapshot.tractorX,
+            snapshot.tractorY,
+            snapshot.tractorZ,
+            snapshot.tractorYaw,
+            snapshot.tractorPitch + snapshot.cabPitchOffset,
+            snapshot.cabRollOffset
+        )
+        System.arraycopy(modelMatrix, 0, baseMatrix, 0, 16)
+
+        val seatZ = if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) -1.25f else -0.58f
+        val seatY = 1.98f
+        val steerTurnDeg = -Math.toDegrees(snapshot.steerWheelAngleRad.toDouble()).toFloat() * 0.5f
+
+        // Torso
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, -0.52f, seatY, seatZ)
+        drawMesh(driverTorsoMesh, modelMatrix)
+
+        // Head looking slightly into steering turn
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, -0.52f, seatY + 0.56f, seatZ)
+        Matrix.rotateM(modelMatrix, 0, steerTurnDeg, 0f, 1f, 0f)
+        drawMesh(driverHeadMesh, modelMatrix)
+
+        // Arms reaching forward toward wheel
+        for (sideX in floatArrayOf(-0.27f, 0.27f)) {
+            System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+            Matrix.translateM(modelMatrix, 0, -0.52f + sideX, seatY + 0.48f, seatZ)
+            Matrix.rotateM(modelMatrix, 0, 62f, 1f, 0f, 0f)
+            drawMesh(driverArmMesh, modelMatrix)
+        }
+    }
+
+    private fun drawDriverOnFoot() {
+        setupMeshShaderCommon()
+        val walkAmp = snapshot.driverWalkSpeed
+        val phase = snapshot.driverWalkCycle
+        val legSwingDeg = sin(phase) * 34f * walkAmp
+        val armSwingDeg = -sin(phase) * 28f * walkAmp
+        val strideBob = abs(sin(phase)) * 0.055f * walkAmp
+        val idleBreath = sin(snapshot.simClock * 2.4f) * 0.012f * (1f - walkAmp)
+        val torsoTwistDeg = sin(phase) * 5f * walkAmp
+
+        setModelMatrix(
+            snapshot.driverX,
+            snapshot.driverY + strideBob + idleBreath,
+            snapshot.driverZ,
+            snapshot.driverYaw,
+            0f,
+            0f
+        )
+        System.arraycopy(modelMatrix, 0, baseMatrix, 0, 16)
+
+        // 1. Torso (hips at y = 0.78f, shoulders at y = 1.32f)
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, 0f, 0.78f, 0f)
+        Matrix.rotateM(modelMatrix, 0, torsoTwistDeg, 0f, 1f, 0f)
+        drawMesh(driverTorsoMesh, modelMatrix)
+
+        // 2. Head + Trucker Cap + Aviators
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, 0f, 1.36f, 0f)
+        Matrix.rotateM(modelMatrix, 0, -torsoTwistDeg * 0.5f, 0f, 1f, 0f)
+        drawMesh(driverHeadMesh, modelMatrix)
+
+        // 3. Articulated Left & Right Legs (swings opposite)
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, -0.12f, 0.78f, 0f)
+        Matrix.rotateM(modelMatrix, 0, legSwingDeg, 1f, 0f, 0f)
+        drawMesh(driverLegMesh, modelMatrix)
+
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, 0.12f, 0.78f, 0f)
+        Matrix.rotateM(modelMatrix, 0, -legSwingDeg, 1f, 0f, 0f)
+        drawMesh(driverLegMesh, modelMatrix)
+
+        // 4. Articulated Left & Right Arms (natural counter-swing)
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, -0.29f, 1.30f, 0f)
+        Matrix.rotateM(modelMatrix, 0, -armSwingDeg, 1f, 0f, 0f)
+        Matrix.rotateM(modelMatrix, 0, -5f, 0f, 0f, 1f)
+        drawMesh(driverArmMesh, modelMatrix)
+
+        System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+        Matrix.translateM(modelMatrix, 0, 0.29f, 1.30f, 0f)
+        Matrix.rotateM(modelMatrix, 0, armSwingDeg, 1f, 0f, 0f)
+        Matrix.rotateM(modelMatrix, 0, 5f, 0f, 0f, 1f)
+        drawMesh(driverArmMesh, modelMatrix)
+    }
+
+    private fun drawExhaustSmoke() {
+        val smokeActivity = (0.22f + snapshot.throttleLevel * 0.78f).coerceIn(0.2f, 1f)
+        setModelMatrix(
+            snapshot.tractorX,
+            snapshot.tractorY,
+            snapshot.tractorZ,
+            snapshot.tractorYaw,
+            snapshot.tractorPitch,
+            0f
+        )
+        System.arraycopy(modelMatrix, 0, baseMatrix, 0, 16)
+
+        val stacks = if (truck.cabStyle == TruckCabStyle.AMERICAN_CONVENTIONAL) {
+            arrayOf(floatArrayOf(-1.12f, 3.76f, 0.35f), floatArrayOf(1.12f, 3.76f, 0.35f))
+        } else {
+            arrayOf(floatArrayOf(-0.98f, 3.35f, -0.35f))
+        }
+
+        val puffSpeed = 1.6f + snapshot.throttleLevel * 2.2f
+        for (st in stacks) {
+            for (k in 0 until 3) {
+                val life = ((snapshot.simClock * puffSpeed + k * 0.33f) % 1f)
+                val rise = life * (0.9f + smokeActivity * 0.9f)
+                val driftBack = life * (0.35f + abs(snapshot.speedMs) * 0.08f)
+                val scale = (0.35f + life * 0.95f) * (0.55f + smokeActivity * 0.6f)
+
+                System.arraycopy(baseMatrix, 0, modelMatrix, 0, 16)
+                Matrix.translateM(modelMatrix, 0, st[0], st[1] + rise, st[2] + driftBack)
+                Matrix.scaleM(modelMatrix, 0, scale, scale * 0.85f, scale)
+                drawMesh(exhaustPuffMesh, modelMatrix)
+            }
         }
     }
 
@@ -615,47 +1005,59 @@ class TruckSimRenderer(
         val p = truck.primaryColorRgb
         val a = truck.accentColorRgb
 
-        // 1. Player Tractor Cab (Euro Cabover vs American Long-Nose)
+        // 1. Player Tractor Cab with open framed windshield so seated 3D driver is visible from outside!
         cabMesh = MeshBuilder().apply {
             // Heavy steel chassis frame rails
             addBox(0f, 0.72f, 0.1f, 1.05f, 0.28f, 5.1f, 0.13f, 0.15f, 0.18f)
-            // Chrome fuel tanks on left & right
+            // Chrome fuel tanks & entry steps on left & right
             addBox(-0.88f, 0.72f, 0.2f, 0.52f, 0.52f, 1.6f, 0.75f, 0.78f, 0.82f)
             addBox(0.88f, 0.72f, 0.2f, 0.52f, 0.52f, 1.6f, 0.75f, 0.78f, 0.82f)
+            addBox(-1.14f, 0.96f, -1.10f, 0.16f, 0.08f, 0.52f, 0.72f, 0.75f, 0.80f)
+            addBox(1.14f, 0.96f, -1.10f, 0.16f, 0.08f, 0.52f, 0.72f, 0.75f, 0.80f)
             // Fifth wheel hitch plate
             addBox(0f, 0.95f, 1.15f, 1.1f, 0.14f, 0.95f, 0.2f, 0.22f, 0.25f)
             // Front chrome bumper
             addBox(0f, 0.58f, -2.52f, 2.34f, 0.34f, 0.22f, 0.80f, 0.83f, 0.87f)
 
             if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) {
-                // Tall modern Euro Cabover body
-                addBox(0f, 2.15f, -1.45f, 2.34f, 2.25f, 2.05f, p[0], p[1], p[2])
-                // Aero roof fairing
-                addBox(0f, 3.45f, -1.25f, 2.18f, 0.45f, 1.65f, p[0] * 0.95f, p[1] * 0.95f, p[2] * 0.95f)
-                // Tinted wrap-around windshield
-                addBox(0f, 2.55f, -2.49f, 2.08f, 0.95f, 0.06f, 0.08f, 0.14f, 0.20f)
-                // Side windows
-                addBox(-1.18f, 2.55f, -1.65f, 0.04f, 0.75f, 1.15f, 0.08f, 0.14f, 0.20f)
-                addBox(1.18f, 2.55f, -1.65f, 0.04f, 0.75f, 1.15f, 0.08f, 0.14f, 0.20f)
-                // Accent racing stripe & front grille
+                // Lower front cab body below windshield
+                addBox(0f, 1.56f, -1.45f, 2.34f, 1.10f, 2.05f, p[0], p[1], p[2])
+                // Rear sleeper wall & side columns
+                addBox(0f, 2.58f, -0.58f, 2.34f, 1.02f, 0.32f, p[0], p[1], p[2])
+                addBox(-1.11f, 2.58f, -1.48f, 0.12f, 1.02f, 1.70f, p[0], p[1], p[2])
+                addBox(1.11f, 2.58f, -1.48f, 0.12f, 1.02f, 1.70f, p[0], p[1], p[2])
+                // Cab roof + aero roof fairing + amber clearance lights
+                addBox(0f, 3.16f, -1.45f, 2.34f, 0.22f, 2.05f, p[0], p[1], p[2])
+                addBox(0f, 3.50f, -1.25f, 2.18f, 0.45f, 1.65f, p[0] * 0.95f, p[1] * 0.95f, p[2] * 0.95f)
+                addBox(-0.65f, 3.22f, -2.49f, 0.14f, 0.08f, 0.06f, 1.0f, 0.58f, 0.05f, 0.9f)
+                addBox(0.65f, 3.22f, -2.49f, 0.14f, 0.08f, 0.06f, 1.0f, 0.58f, 0.05f, 0.9f)
+                // Interior seats & dash visible through windshield
+                addBox(0f, 2.04f, -2.18f, 2.06f, 0.24f, 0.45f, 0.14f, 0.16f, 0.19f)
+                addBox(-0.52f, 2.18f, -1.05f, 0.46f, 0.65f, 0.16f, 0.18f, 0.20f, 0.24f)
+                addBox(0.52f, 2.18f, -1.05f, 0.46f, 0.65f, 0.16f, 0.18f, 0.20f, 0.24f)
+                // Front grille & accent stripe
                 addBox(0f, 1.45f, -2.49f, 1.65f, 0.85f, 0.06f, 0.16f, 0.18f, 0.22f)
                 addBox(0f, 2.02f, -2.49f, 2.1f, 0.12f, 0.07f, a[0], a[1], a[2])
+                // Exhaust stack behind cab
+                addCylinderY(-0.98f, 1.15f, -0.35f, 0.08f, 0.08f, 2.20f, 8, 0.78f, 0.80f, 0.84f)
                 // Side mirrors
                 addBox(-1.34f, 2.45f, -2.25f, 0.14f, 0.48f, 0.18f, 0.15f, 0.16f, 0.18f)
                 addBox(1.34f, 2.45f, -2.25f, 0.14f, 0.48f, 0.18f, 0.15f, 0.16f, 0.18f)
             } else {
-                // American Conventional Long-Nose Hood + Sleeper Cab
-                // Long nose hood
+                // American Conventional Long-Nose Hood + Sleeper Cab with open windshield frame
                 addBox(0f, 1.48f, -1.85f, 1.85f, 1.10f, 1.75f, p[0], p[1], p[2])
-                // Iconic chrome radiator grille
                 addBox(0f, 1.45f, -2.74f, 1.45f, 1.02f, 0.08f, 0.86f, 0.89f, 0.92f)
-                // Cab + Sleeper behind hood
-                addBox(0f, 2.25f, -0.35f, 2.30f, 2.15f, 1.85f, p[0], p[1], p[2])
-                addBox(0f, 2.55f, -1.29f, 2.02f, 0.72f, 0.06f, 0.08f, 0.14f, 0.20f)
+                // Lower cab base + rear sleeper + A-pillars + roof
+                addBox(0f, 1.62f, -0.35f, 2.30f, 0.96f, 1.85f, p[0], p[1], p[2])
+                addBox(0f, 2.55f, 0.22f, 2.30f, 0.96f, 0.70f, p[0], p[1], p[2])
+                addBox(-1.09f, 2.55f, -0.68f, 0.12f, 0.96f, 1.12f, p[0], p[1], p[2])
+                addBox(1.09f, 2.55f, -0.68f, 0.12f, 0.96f, 1.12f, p[0], p[1], p[2])
+                addBox(0f, 3.12f, -0.35f, 2.30f, 0.24f, 1.85f, p[0], p[1], p[2])
+                addBox(-0.52f, 2.15f, -0.38f, 0.46f, 0.65f, 0.16f, 0.18f, 0.20f, 0.24f)
                 // Accent stripe along hood & sleeper
                 addBox(-1.16f, 1.95f, -0.35f, 0.04f, 0.18f, 1.70f, a[0], a[1], a[2])
                 addBox(1.16f, 1.95f, -0.35f, 0.04f, 0.18f, 1.70f, a[0], a[1], a[2])
-                // Twin vertical chrome exhaust stacks!
+                // Twin vertical chrome exhaust stacks
                 addCylinderY(-1.12f, 1.1f, 0.35f, 0.09f, 0.09f, 2.65f, 8, 0.86f, 0.88f, 0.92f)
                 addCylinderY(1.12f, 1.1f, 0.35f, 0.09f, 0.09f, 2.65f, 8, 0.86f, 0.88f, 0.92f)
                 // Side mirrors
@@ -678,22 +1080,17 @@ class TruckSimRenderer(
             addBox(1.08f, 0.88f, zFront, 0.16f, 0.18f, 0.10f, 1.0f, 0.55f, 0.0f, 1.0f)
         }.build()
 
-        // 2. Freight Trailer (Box Van / Cistern / Heavy Equipment)
+        // 2. Freight Trailer
         trailerMesh = MeshBuilder().apply {
-            // Under-chassis & tandem bogie
             addBox(0f, 0.92f, 0.4f, 1.8f, 0.26f, 8.6f, 0.16f, 0.18f, 0.21f)
             addBox(0f, 0.85f, 4.65f, 2.40f, 0.32f, 0.24f, 0.22f, 0.24f, 0.26f)
             if (physics.route.id == "desert_night") {
-                // ADR Fuel Tanker Cylinder
                 addCylinderZ(0f, 2.25f, 0.35f, 1.15f, 8.6f, 14, 0.82f, 0.84f, 0.88f)
                 addBox(0f, 2.25f, 4.68f, 0.8f, 0.6f, 0.08f, 0.95f, 0.35f, 0.05f, 0.2f)
             } else {
-                // Full 53ft Refrigerated / Freight Box Trailer
                 addBox(0f, 2.42f, 0.35f, 2.46f, 2.65f, 8.9f, 0.88f, 0.90f, 0.93f)
-                // Accent stripe on trailer flanks
                 addBox(-1.24f, 2.35f, 0.35f, 0.04f, 0.42f, 8.5f, p[0], p[1], p[2])
                 addBox(1.24f, 2.35f, 0.35f, 0.04f, 0.42f, 8.5f, p[0], p[1], p[2])
-                // Rear roll-up doors & red marker lights
                 addBox(0f, 2.42f, 4.82f, 2.22f, 2.40f, 0.05f, 0.72f, 0.75f, 0.78f)
                 addBox(-1.05f, 3.65f, 4.82f, 0.18f, 0.12f, 0.06f, 0.95f, 0.15f, 0.10f, 0.8f)
                 addBox(1.05f, 3.65f, 4.82f, 0.18f, 0.12f, 0.06f, 0.95f, 0.15f, 0.10f, 0.8f)
@@ -710,43 +1107,165 @@ class TruckSimRenderer(
             addCylinderX(0f, 0f, 0f, 0.52f, 0.38f, 12, 0.11f, 0.12f, 0.14f, 0.72f, 0.75f, 0.80f)
         }.build()
 
-        // 4. Cockpit Interior Frame (for CAB view) + 3D Steering Wheel
+        // 4. Vista Real Cockpit Interior (Dashboard, Gauges, GPS, Visor, Mirrors, Hood)
+        val eyeZ = cockpitEyeLocalZ()
+        val dashZ = eyeZ - 0.94f
+        val glassZ = if (truck.cabStyle == TruckCabStyle.EURO_CABOVER) -2.32f else -1.84f
         cockpitFrameMesh = MeshBuilder().apply {
-            // Left & Right A-Pillars
-            addBox(-1.12f, 2.65f, -2.15f, 0.12f, 1.25f, 0.14f, 0.12f, 0.14f, 0.17f)
-            addBox(1.12f, 2.65f, -2.15f, 0.12f, 1.25f, 0.14f, 0.12f, 0.14f, 0.17f)
-            // Roof header & sun visor
-            addBox(0f, 3.25f, -2.15f, 2.34f, 0.18f, 0.22f, 0.10f, 0.12f, 0.15f)
-            // Dashboard cowl
-            addBox(0f, 1.98f, -1.92f, 2.28f, 0.42f, 0.52f, 0.14f, 0.16f, 0.19f)
-            // Illuminated gauge cluster panel
-            addBox(-0.52f, 2.12f, -1.78f, 0.56f, 0.18f, 0.10f, 0.08f, 0.12f, 0.16f, 0.3f)
-            // Hood visible out front if American Conventional
+            // Left & Right A-Pillars + Grab Handles
+            addBox(-1.14f, 2.86f, glassZ, 0.12f, 1.25f, 0.14f, 0.12f, 0.14f, 0.17f)
+            addBox(1.14f, 2.86f, glassZ, 0.12f, 1.25f, 0.14f, 0.12f, 0.14f, 0.17f)
+            addBox(-1.05f, 2.74f, glassZ + 0.08f, 0.03f, 0.36f, 0.03f, 0.58f, 0.62f, 0.68f)
+
+            // Roof header, sun visor & cabin dome light strip
+            addBox(0f, 3.44f, glassZ + 0.08f, 2.40f, 0.24f, 0.34f, 0.09f, 0.11f, 0.14f)
+            addBox(-0.48f, 3.30f, glassZ + 0.16f, 0.62f, 0.11f, 0.05f, 0.16f, 0.18f, 0.22f)
+            addBox(0f, 3.36f, glassZ + 0.22f, 0.22f, 0.03f, 0.06f, 1.0f, 0.78f, 0.38f, 0.7f)
+
+            // Main sculpted 2-tier dashboard cowl
+            addBox(0f, 2.12f, dashZ - 0.14f, 2.30f, 0.36f, 0.62f, 0.13f, 0.15f, 0.18f)
+            addBox(0f, 2.31f, dashZ - 0.18f, 2.26f, 0.05f, 0.44f, 0.17f, 0.19f, 0.23f)
+            // Brushed aluminum dash trim strip
+            addBox(0f, 2.26f, dashZ + 0.15f, 2.10f, 0.025f, 0.03f, 0.65f, 0.69f, 0.74f)
+
+            // Driver Instrument Cluster Binnacle behind steering wheel (-0.52 X)
+            addBox(-0.52f, 2.37f, dashZ + 0.02f, 0.56f, 0.16f, 0.12f, 0.07f, 0.09f, 0.12f)
+            // Glowing Speedometer & Tachometer dials + needles
+            addCylinderZ(-0.65f, 2.37f, dashZ + 0.08f, 0.056f, 0.02f, 12, 0.06f, 0.16f, 0.24f)
+            addBox(-0.65f, 2.37f, dashZ + 0.095f, 0.07f, 0.07f, 0.01f, 0.12f, 0.72f, 0.96f, 0.75f)
+            addBox(-0.65f, 2.38f, dashZ + 0.105f, 0.012f, 0.045f, 0.01f, 1.0f, 0.35f, 0.08f, 0.9f)
+
+            addCylinderZ(-0.39f, 2.37f, dashZ + 0.08f, 0.056f, 0.02f, 12, 0.06f, 0.16f, 0.24f)
+            addBox(-0.39f, 2.37f, dashZ + 0.095f, 0.07f, 0.07f, 0.01f, 0.98f, 0.52f, 0.08f, 0.75f)
+            addBox(-0.39f, 2.38f, dashZ + 0.105f, 0.012f, 0.045f, 0.01f, 1.0f, 0.22f, 0.12f, 0.9f)
+
+            // Digital center multi-function telemetry strip between dials
+            addBox(-0.52f, 2.37f, dashZ + 0.09f, 0.10f, 0.08f, 0.01f, 0.14f, 0.85f, 0.45f, 0.8f)
+
+            // Center Stack Illuminated GPS Navigation Tablet
+            addBox(-0.04f, 2.34f, dashZ + 0.04f, 0.30f, 0.21f, 0.06f, 0.10f, 0.12f, 0.15f)
+            addBox(-0.04f, 2.34f, dashZ + 0.074f, 0.25f, 0.16f, 0.01f, 0.07f, 0.16f, 0.24f, 0.65f)
+            // Glowing GPS green route path & truck marker
+            addBox(-0.04f, 2.34f, dashZ + 0.082f, 0.024f, 0.12f, 0.008f, 0.18f, 0.92f, 0.46f, 0.95f)
+            addBox(-0.04f, 2.30f, dashZ + 0.084f, 0.035f, 0.035f, 0.008f, 1.0f, 0.48f, 0.05f, 1.0f)
+
+            // Center console base for gear stick
+            addBox(-0.06f, 1.94f, eyeZ - 0.64f, 0.26f, 0.14f, 0.46f, 0.12f, 0.14f, 0.17f)
+
+            // Hood visible out front on American Long-Nose trucks (and subtle front nose edge on Euro)
             if (truck.cabStyle == TruckCabStyle.AMERICAN_CONVENTIONAL) {
-                addBox(0f, 1.72f, -2.75f, 1.72f, 0.35f, 1.35f, p[0], p[1], p[2])
+                addBox(0f, 1.94f, -2.55f, 1.82f, 0.36f, 1.65f, p[0], p[1], p[2])
+                // Chrome hood center ornament strip & twin stacks visible in side peripheral
+                addBox(0f, 2.13f, -2.55f, 0.06f, 0.03f, 1.50f, 0.86f, 0.89f, 0.92f)
+                addCylinderY(-1.12f, 1.95f, -1.65f, 0.07f, 0.07f, 1.50f, 8, 0.85f, 0.88f, 0.92f)
+                addCylinderY(1.12f, 1.95f, -1.65f, 0.07f, 0.07f, 1.50f, 8, 0.85f, 0.88f, 0.92f)
+            } else {
+                // Subtle lower cab nose edge & chrome badge strip
+                addBox(0f, 2.18f, -2.42f, 2.15f, 0.10f, 0.24f, p[0], p[1], p[2])
             }
-            // Side mirrors visible from cab
-            addBox(-1.32f, 2.48f, -2.20f, 0.16f, 0.48f, 0.10f, 0.22f, 0.24f, 0.28f)
-            addBox(1.32f, 2.48f, -2.20f, 0.16f, 0.48f, 0.10f, 0.22f, 0.24f, 0.28f)
+
+            // Realistic exterior Side Mirrors with arm brackets + reflective glass + amber marker lights
+            addBox(-1.26f, 2.70f, glassZ - 0.06f, 0.24f, 0.04f, 0.04f, 0.20f, 0.22f, 0.26f)
+            addBox(-1.34f, 2.58f, glassZ - 0.08f, 0.16f, 0.46f, 0.10f, 0.14f, 0.16f, 0.19f)
+            addBox(-1.34f, 2.58f, glassZ - 0.025f, 0.12f, 0.38f, 0.02f, 0.42f, 0.56f, 0.70f, 0.28f)
+            addBox(-1.34f, 2.82f, glassZ - 0.08f, 0.06f, 0.04f, 0.08f, 1.0f, 0.55f, 0.05f, 0.9f)
+
+            addBox(1.26f, 2.70f, glassZ - 0.06f, 0.24f, 0.04f, 0.04f, 0.20f, 0.22f, 0.26f)
+            addBox(1.34f, 2.58f, glassZ - 0.08f, 0.16f, 0.46f, 0.10f, 0.14f, 0.16f, 0.19f)
+            addBox(1.34f, 2.58f, glassZ - 0.025f, 0.12f, 0.38f, 0.02f, 0.42f, 0.56f, 0.70f, 0.28f)
+        }.build()
+
+        gearStickMesh = MeshBuilder().apply {
+            // Chrome shift stalk + leather/amber knob
+            addCylinderY(0f, 0f, 0f, 0.016f, 0.020f, 0.28f, 8, 0.78f, 0.80f, 0.84f)
+            addBox(0f, 0.29f, 0f, 0.055f, 0.065f, 0.055f, 0.14f, 0.15f, 0.18f)
+            addBox(0f, 0.325f, 0f, 0.03f, 0.01f, 0.03f, 0.98f, 0.45f, 0.05f, 0.35f)
+        }.build()
+
+        wiperArmMesh = MeshBuilder().apply {
+            // Pivoted at base (0,0,0), extends left-upward
+            addBox(0.24f, 0.02f, 0f, 0.48f, 0.022f, 0.02f, 0.10f, 0.11f, 0.13f)
+            addBox(0.42f, 0.03f, 0f, 0.36f, 0.018f, 0.025f, 0.07f, 0.08f, 0.09f)
         }.build()
 
         steeringWheelMesh = MeshBuilder().apply {
-            val rimR = 0.25f
-            val segs = 16
+            val rimR = 0.20f
+            val segs = 20
             for (i in 0 until segs) {
-                val a = (i.toFloat() / segs) * 2f * Math.PI.toFloat()
-                val px = cos(a) * rimR
-                val py = sin(a) * rimR
-                addBox(px, py, 0f, 0.045f, 0.045f, 0.045f, 0.12f, 0.13f, 0.15f)
+                val a0 = (i.toFloat() / segs) * 2f * PI.toFloat()
+                val px = cos(a0) * rimR
+                val py = sin(a0) * rimR
+                val isTopMarker = i == 5
+                addBox(
+                    px, py, 0f, 0.038f, 0.038f, 0.038f,
+                    if (isTopMarker) 1.0f else 0.12f,
+                    if (isTopMarker) 0.44f else 0.13f,
+                    if (isTopMarker) 0.04f else 0.15f
+                )
             }
-            // Center hub & spokes
-            addBox(0f, 0f, 0.01f, 0.14f, 0.12f, 0.05f, 0.22f, 0.24f, 0.28f)
-            addBox(0f, -0.11f, 0.01f, 0.05f, 0.22f, 0.03f, 0.65f, 0.68f, 0.72f)
-            addBox(-0.11f, 0f, 0.01f, 0.22f, 0.04f, 0.03f, 0.65f, 0.68f, 0.72f)
-            addBox(0.11f, 0f, 0.01f, 0.22f, 0.04f, 0.03f, 0.65f, 0.68f, 0.72f)
+            // Center horn pad, metallic spokes & amber emblem
+            addBox(0f, 0f, 0.01f, 0.11f, 0.095f, 0.04f, 0.20f, 0.22f, 0.26f)
+            addBox(0f, 0f, 0.032f, 0.04f, 0.025f, 0.01f, 0.98f, 0.45f, 0.05f, 0.5f)
+            addBox(0f, -0.09f, 0.008f, 0.04f, 0.18f, 0.025f, 0.65f, 0.68f, 0.72f)
+            addBox(-0.09f, 0f, 0.008f, 0.18f, 0.035f, 0.025f, 0.65f, 0.68f, 0.72f)
+            addBox(0.09f, 0f, 0.008f, 0.18f, 0.035f, 0.025f, 0.65f, 0.68f, 0.72f)
+            // Steering column shaft into dash
+            addCylinderZ(0f, 0f, -0.14f, 0.045f, 0.24f, 10, 0.15f, 0.17f, 0.20f)
         }.build()
 
-        // 5. AI Traffic Meshes
+        // First-person forearm unit (length = 1.0 along -Z so scaleZ = len)
+        forearmMesh = MeshBuilder().apply {
+            addBox(0f, 0f, -0.26f, 0.09f, 0.09f, 0.52f, 0.16f, 0.21f, 0.29f)
+            addBox(0f, 0f, -0.76f, 0.075f, 0.075f, 0.48f, 0.82f, 0.64f, 0.52f)
+        }.build()
+
+        gloveHandMesh = MeshBuilder().apply {
+            addBox(0f, 0f, 0f, 0.085f, 0.095f, 0.085f, 0.14f, 0.12f, 0.11f)
+        }.build()
+
+        // 5. Articulated 3D Driver Character ("Hombre") Meshes
+        driverTorsoMesh = MeshBuilder().apply {
+            // Trucker jacket torso (0..0.56m above waist)
+            addBox(0f, 0.29f, 0f, 0.44f, 0.54f, 0.25f, 0.16f, 0.21f, 0.29f)
+            // High-vis amber safety vest panels & reflective silver trim
+            addBox(-0.12f, 0.30f, -0.13f, 0.12f, 0.46f, 0.02f, 0.98f, 0.45f, 0.05f, 0.15f)
+            addBox(0.12f, 0.30f, -0.13f, 0.12f, 0.46f, 0.02f, 0.98f, 0.45f, 0.05f, 0.15f)
+            addBox(0f, 0.30f, 0.13f, 0.38f, 0.46f, 0.02f, 0.98f, 0.45f, 0.05f, 0.15f)
+            addBox(0f, 0.19f, 0f, 0.46f, 0.06f, 0.28f, 0.88f, 0.92f, 0.95f, 0.28f)
+            // Leather belt & steel buckle
+            addBox(0f, 0.03f, 0f, 0.45f, 0.07f, 0.26f, 0.12f, 0.10f, 0.09f)
+            addBox(0f, 0.03f, -0.135f, 0.08f, 0.06f, 0.02f, 0.78f, 0.80f, 0.84f)
+        }.build()
+
+        driverHeadMesh = MeshBuilder().apply {
+            // Neck & head
+            addBox(0f, 0.05f, 0f, 0.11f, 0.10f, 0.11f, 0.82f, 0.64f, 0.52f)
+            addBox(0f, 0.20f, 0f, 0.21f, 0.23f, 0.22f, 0.85f, 0.67f, 0.54f)
+            // Hair back & beard trim
+            addBox(0f, 0.21f, 0.08f, 0.22f, 0.20f, 0.08f, 0.16f, 0.12f, 0.10f)
+            addBox(0f, 0.12f, -0.07f, 0.19f, 0.08f, 0.10f, 0.18f, 0.14f, 0.12f)
+            // Dark aviator sunglasses
+            addBox(0f, 0.23f, -0.115f, 0.19f, 0.055f, 0.025f, 0.06f, 0.08f, 0.11f)
+            // Amber & navy trucker cap + front brim
+            addBox(0f, 0.33f, 0.01f, 0.23f, 0.10f, 0.24f, 0.96f, 0.44f, 0.05f)
+            addBox(0f, 0.29f, -0.16f, 0.22f, 0.025f, 0.13f, 0.14f, 0.18f, 0.24f)
+        }.build()
+
+        driverArmMesh = MeshBuilder().apply {
+            // Shoulder-pivoted arm extending downward (-Y)
+            addBox(0f, -0.14f, 0f, 0.125f, 0.28f, 0.125f, 0.17f, 0.22f, 0.30f)
+            addBox(0f, -0.37f, 0f, 0.10f, 0.20f, 0.10f, 0.83f, 0.65f, 0.52f)
+            addBox(0f, -0.51f, 0f, 0.095f, 0.10f, 0.10f, 0.14f, 0.12f, 0.11f)
+        }.build()
+
+        driverLegMesh = MeshBuilder().apply {
+            // Hip-pivoted leg extending downward (-Y) to boot sole at -0.78m
+            addBox(0f, -0.31f, 0f, 0.16f, 0.62f, 0.17f, 0.15f, 0.23f, 0.38f)
+            addBox(0f, -0.68f, -0.03f, 0.17f, 0.15f, 0.25f, 0.28f, 0.16f, 0.09f)
+            addBox(0f, -0.765f, -0.03f, 0.18f, 0.035f, 0.26f, 0.08f, 0.08f, 0.09f)
+        }.build()
+
+        // 6. AI Traffic Meshes
         trafficCarMesh = MeshBuilder().apply {
             addBox(0f, 0.52f, 0f, 1.85f, 0.62f, 4.1f, 0.22f, 0.36f, 0.56f)
             addBox(0f, 1.05f, 0.15f, 1.60f, 0.52f, 2.0f, 0.18f, 0.30f, 0.48f)
@@ -765,13 +1284,11 @@ class TruckSimRenderer(
             addBox(0.85f, 0.95f, 5.02f, 0.32f, 0.18f, 0.06f, 1.0f, 0.15f, 0.1f, 0.9f)
         }.build()
 
-        // 6. Scenery Props (Trees/Rocks, Gantries, Guardrail Posts)
+        // 7. Scenery Props (Trees, Light Poles, Chevrons, Gantries, Exhaust)
         treeMesh = MeshBuilder().apply {
             if (env == EnvironmentTheme.DESERT_NIGHT) {
-                // Desert Canyon Pillar / Saguaro
                 addCylinderY(0f, 0f, 0f, 0.45f, 0.95f, 4.2f, 6, 0.35f, 0.22f, 0.16f)
             } else {
-                // Alpine Pine Tree
                 addCylinderY(0f, 0f, 0f, 0.22f, 0.28f, 2.4f, 6, 0.32f, 0.22f, 0.14f)
                 addCylinderY(0f, 2.0f, 0f, 0.15f, 1.75f, 3.5f, 7, 0.10f, 0.30f, 0.14f)
                 addCylinderY(0f, 4.2f, 0f, 0.05f, 1.25f, 3.0f, 7, 0.12f, 0.36f, 0.16f)
@@ -782,12 +1299,31 @@ class TruckSimRenderer(
             addBox(0f, 0.45f, 0f, 0.14f, 0.90f, 0.14f, 0.45f, 0.48f, 0.52f)
         }.build()
 
+        lightPoleMesh = MeshBuilder().apply {
+            addCylinderY(0f, 0f, 0f, 0.08f, 0.14f, 7.6f, 6, 0.45f, 0.48f, 0.52f)
+            addBox(0.95f, 7.55f, 0f, 2.0f, 0.12f, 0.12f, 0.48f, 0.52f, 0.56f)
+            val lampEm = if (isNight || env == EnvironmentTheme.STORM_SUMMIT || env == EnvironmentTheme.COASTAL_SUNSET) 1.0f else 0.25f
+            addBox(1.85f, 7.45f, 0f, 0.48f, 0.10f, 0.26f, 1.0f, 0.88f, 0.58f, lampEm)
+        }.build()
+
+        chevronSignMesh = MeshBuilder().apply {
+            addBox(0f, 1.05f, 0f, 0.10f, 2.10f, 0.10f, 0.48f, 0.50f, 0.54f)
+            addBox(0f, 2.10f, 0f, 0.95f, 0.95f, 0.08f, 0.12f, 0.13f, 0.15f)
+            addBox(0f, 2.10f, 0.045f, 0.72f, 0.72f, 0.02f, 0.98f, 0.65f, 0.05f, if (isNight) 0.85f else 0.20f)
+            addBox(0f, 2.10f, -0.045f, 0.72f, 0.72f, 0.02f, 0.98f, 0.65f, 0.05f, if (isNight) 0.85f else 0.20f)
+        }.build()
+
+        exhaustPuffMesh = MeshBuilder().apply {
+            val smokeCol = if (isNight) 0.22f else 0.48f
+            addBox(0f, 0f, 0f, 0.26f, 0.22f, 0.28f, smokeCol, smokeCol, smokeCol + 0.02f)
+            addBox(0.06f, 0.06f, 0.05f, 0.18f, 0.18f, 0.20f, smokeCol * 1.12f, smokeCol * 1.12f, smokeCol * 1.14f)
+        }.build()
+
         gantryMesh = MeshBuilder().apply {
             val w = physics.roadHalfWidth + 0.8f
             addBox(-w, 3.2f, 0f, 0.32f, 6.4f, 0.32f, 0.55f, 0.58f, 0.62f)
             addBox(w, 3.2f, 0f, 0.32f, 6.4f, 0.32f, 0.55f, 0.58f, 0.62f)
             addBox(0f, 6.2f, 0f, w * 2f + 0.4f, 0.36f, 0.36f, 0.55f, 0.58f, 0.62f)
-            // Green/Blue highway sign board
             addBox(2.2f, 5.9f, 0.22f, 4.2f, 1.55f, 0.12f, 0.08f, 0.42f, 0.24f, if (isNight) 0.25f else 0.05f)
             if (isNight) {
                 addBox(-2.2f, 6.0f, 0f, 0.6f, 0.12f, 0.3f, 1.0f, 0.85f, 0.6f, 1.0f)
@@ -849,7 +1385,7 @@ class TruckSimRenderer(
         var nx = uy * vz - uz * vy
         var ny = uz * vx - ux * vz
         var nz = ux * vy - uy * vx
-        val len = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(0.001f)
+        val len = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(0.001f)
         nx /= len; ny /= len; nz /= len
 
         fun v(vx0: Float, vy0: Float, vz0: Float) {
@@ -897,6 +1433,13 @@ class TruckSimRenderer(
         EnvironmentTheme.COASTAL_SUNSET -> floatArrayOf(0.32f, 0.26f, 0.20f)
         EnvironmentTheme.DESERT_NIGHT -> floatArrayOf(0.14f, 0.11f, 0.10f)
         EnvironmentTheme.STORM_SUMMIT -> floatArrayOf(0.20f, 0.24f, 0.22f)
+    }
+
+    private fun mountainRgb(): FloatArray = when (env) {
+        EnvironmentTheme.ALPINE_DAY -> floatArrayOf(0.28f, 0.36f, 0.42f)
+        EnvironmentTheme.COASTAL_SUNSET -> floatArrayOf(0.42f, 0.28f, 0.24f)
+        EnvironmentTheme.DESERT_NIGHT -> floatArrayOf(0.10f, 0.08f, 0.11f)
+        EnvironmentTheme.STORM_SUMMIT -> floatArrayOf(0.26f, 0.30f, 0.34f)
     }
 
     private fun fogDensity(): Float = when (env) {

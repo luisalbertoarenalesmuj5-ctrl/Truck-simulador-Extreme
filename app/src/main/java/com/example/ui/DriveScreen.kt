@@ -23,10 +23,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -118,6 +120,10 @@ fun DriveScreen(
     }
     var leftBlinker by remember { mutableStateOf(false) }
     var rightBlinker by remember { mutableStateOf(false) }
+    var walkMoveX by remember { mutableFloatStateOf(0f) }
+    var walkMoveY by remember { mutableFloatStateOf(0f) }
+    var sprint by remember { mutableStateOf(false) }
+    var exitHintVisible by remember { mutableStateOf(false) }
 
     var telemetry by remember { mutableStateOf(physics.readTelemetry()) }
     var deliverySaving by remember { mutableStateOf(false) }
@@ -126,7 +132,7 @@ fun DriveScreen(
 
     val tiltController = remember(context) {
         TiltSteeringController(context) { tilt ->
-            if (steeringMode == SteeringMode.TILT && !paused) {
+            if (steeringMode == SteeringMode.TILT && !paused && !telemetry.driverOnFoot) {
                 steerInput = (tilt * sensitivity).coerceIn(-1f, 1f)
             }
         }
@@ -141,10 +147,18 @@ fun DriveScreen(
         onDispose { tiltController.stop() }
     }
 
+    LaunchedEffect(exitHintVisible) {
+        if (exitHintVisible) {
+            kotlinx.coroutines.delay(2200L)
+            exitHintVisible = false
+        }
+    }
+
     // Push live inputs into physics engine cleanly
     LaunchedEffect(
         throttle, brake, steerInput, retarderOn, parkingBrake,
-        headlightsOn, leftBlinker, rightBlinker
+        headlightsOn, leftBlinker, rightBlinker,
+        walkMoveX, walkMoveY, sprint
     ) {
         physics.inputs = ControlInputs(
             throttle = throttle,
@@ -154,7 +168,10 @@ fun DriveScreen(
             parkingBrake = parkingBrake,
             headlightsOn = headlightsOn,
             leftBlinker = leftBlinker,
-            rightBlinker = rightBlinker
+            rightBlinker = rightBlinker,
+            walkMoveX = walkMoveX,
+            walkMoveY = walkMoveY,
+            sprint = sprint
         )
     }
 
@@ -319,14 +336,20 @@ fun DriveScreen(
 
                     Surface(
                         onClick = {
-                            val all = CameraMode.entries
-                            cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
+                            if (!telemetry.driverOnFoot) {
+                                val all = CameraMode.entries
+                                cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
+                            }
                         },
                         color = ObsidianNight.copy(alpha = 0.80f),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .height(50.dp)
-                            .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
+                            .border(
+                                1.dp,
+                                if (telemetry.driverOnFoot) GunmetalBorder.copy(alpha = 0.5f) else GunmetalBorder,
+                                RoundedCornerShape(14.dp)
+                            )
                             .testTag("btn_switch_camera")
                     ) {
                         Row(
@@ -337,12 +360,12 @@ fun DriveScreen(
                             Icon(
                                 imageVector = Icons.Filled.Cameraswitch,
                                 contentDescription = "Cambiar cámara",
-                                tint = CobaltBeacon,
+                                tint = if (telemetry.driverOnFoot) Color(0xFF6B7C90) else CobaltBeacon,
                                 modifier = Modifier.size(20.dp)
                             )
                             if (!isCompactWidth) {
                                 Text(
-                                    text = cameraMode.label,
+                                    text = if (telemetry.driverOnFoot) "3ª Persona" else cameraMode.label,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White
                                 )
@@ -429,81 +452,215 @@ fun DriveScreen(
                     }
                 }
             }
+            // Quick mode bar: Active Camera badge + Exit Truck ("Bajar / Hombre") trigger
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    onClick = {
+                        if (!telemetry.driverOnFoot) {
+                            val all = CameraMode.entries
+                            cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
+                        }
+                    },
+                    color = ObsidianNight.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .border(1.dp, CobaltBeacon.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .testTag("badge_camera_mode")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Visibility,
+                            contentDescription = "Cámara activa",
+                            tint = CobaltBeacon,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (telemetry.driverOnFoot) "Hombre • A Pie" else cameraMode.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                if (!telemetry.driverOnFoot) {
+                    Surface(
+                        onClick = {
+                            if (telemetry.canExitTruck) {
+                                throttle = 0f
+                                brake = 0f
+                                steerInput = 0f
+                                if (physics.exitTruckToFoot()) {
+                                    telemetry = physics.readTelemetry()
+                                }
+                            } else {
+                                exitHintVisible = true
+                            }
+                        },
+                        color = if (telemetry.canExitTruck) AmberDiesel.copy(alpha = 0.22f) else ObsidianNight.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .border(
+                                1.dp,
+                                if (telemetry.canExitTruck) AmberDiesel else GunmetalBorder,
+                                RoundedCornerShape(12.dp)
+                            )
+                            .testTag("btn_exit_cab_foot")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.DirectionsWalk,
+                                contentDescription = "Bajar del camión",
+                                tint = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Bajar • Hombre",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = exitHintVisible) {
+                Surface(
+                    color = CrimsonBrake.copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text(
+                        text = "Detén el camión para bajar a pie",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
         }
 
-        // 3. Bottom Precision Controls Overlay
+        // 3. Bottom Precision Controls Overlay (Truck Driving vs On-Foot Hombre)
         if (!telemetry.finished && !paused) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                AuxiliaryTruckBar(
-                    retarderOn = retarderOn,
-                    parkingBrake = parkingBrake,
-                    headlightsOn = headlightsOn,
-                    leftBlinker = leftBlinker,
-                    rightBlinker = rightBlinker,
-                    onToggleRetarder = { retarderOn = !retarderOn },
-                    onToggleParking = { parkingBrake = !parkingBrake },
-                    onToggleLights = { headlightsOn = !headlightsOn },
-                    onToggleLeftBlinker = {
-                        leftBlinker = !leftBlinker
-                        if (leftBlinker) rightBlinker = false
-                    },
-                    onToggleRightBlinker = {
-                        rightBlinker = !rightBlinker
-                        if (rightBlinker) leftBlinker = false
-                    },
-                    onHorn = { /* Haptic feedback triggered in AuxiliaryTruckBar */ },
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
-
+            if (telemetry.driverOnFoot) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    // Left: Selected Precision Steering Control
-                    when (steeringMode) {
-                        SteeringMode.WHEEL -> PrecisionSteeringWheel(
-                            sensitivity = sensitivity,
-                            onSteerChanged = { steerInput = it }
-                        )
-                        SteeringMode.BUTTONS -> ProgressiveSteeringButtons(
-                            sensitivity = sensitivity,
-                            onSteerChanged = { steerInput = it }
-                        )
-                        SteeringMode.TILT -> TiltIndicatorWidget(
-                            steerNorm = telemetry.steerAngleNorm,
-                            onRecalibrate = { tiltController.recalibrateZero() }
-                        )
-                    }
+                    DriverWalkJoystick(
+                        onMoveChanged = { x, y ->
+                            walkMoveX = x
+                            walkMoveY = y
+                        }
+                    )
+                    OnFootActionCluster(
+                        sprint = sprint,
+                        nearCabDoor = telemetry.nearCabDoor,
+                        onSprintChanged = { sprint = it },
+                        onBoardTruck = {
+                            if (physics.boardTruckFromFoot()) {
+                                walkMoveX = 0f
+                                walkMoveY = 0f
+                                sprint = false
+                                telemetry = physics.readTelemetry()
+                            }
+                        }
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    AuxiliaryTruckBar(
+                        retarderOn = retarderOn,
+                        parkingBrake = parkingBrake,
+                        headlightsOn = headlightsOn,
+                        leftBlinker = leftBlinker,
+                        rightBlinker = rightBlinker,
+                        onToggleRetarder = { retarderOn = !retarderOn },
+                        onToggleParking = { parkingBrake = !parkingBrake },
+                        onToggleLights = { headlightsOn = !headlightsOn },
+                        onToggleLeftBlinker = {
+                            leftBlinker = !leftBlinker
+                            if (leftBlinker) rightBlinker = false
+                        },
+                        onToggleRightBlinker = {
+                            rightBlinker = !rightBlinker
+                            if (rightBlinker) leftBlinker = false
+                        },
+                        onHorn = { /* Haptic feedback triggered in AuxiliaryTruckBar */ },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
 
-                    // Right: Analog Brake / Reverse & Analog Throttle Pedals
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.Bottom
                     ) {
-                        AnalogPedal(
-                            label = "FRENO / R",
-                            accentColor = CrimsonBrake,
-                            heightDp = if (isCompactWidth) 114 else 132,
-                            widthDp = if (isCompactWidth) 66 else 78,
-                            onLevelChanged = { brake = it },
-                            modifier = Modifier.testTag("brake_pedal")
-                        )
-                        AnalogPedal(
-                            label = "ACEL",
-                            accentColor = EmeraldCargo,
-                            heightDp = if (isCompactWidth) 136 else 156,
-                            widthDp = if (isCompactWidth) 70 else 82,
-                            onLevelChanged = { throttle = it },
-                            modifier = Modifier.testTag("throttle_pedal")
-                        )
+                        // Left: Selected Precision Steering Control
+                        when (steeringMode) {
+                            SteeringMode.WHEEL -> PrecisionSteeringWheel(
+                                sensitivity = sensitivity,
+                                onSteerChanged = { steerInput = it }
+                            )
+                            SteeringMode.BUTTONS -> ProgressiveSteeringButtons(
+                                sensitivity = sensitivity,
+                                onSteerChanged = { steerInput = it }
+                            )
+                            SteeringMode.TILT -> TiltIndicatorWidget(
+                                steerNorm = telemetry.steerAngleNorm,
+                                onRecalibrate = { tiltController.recalibrateZero() }
+                            )
+                        }
+
+                        // Right: Analog Brake / Reverse & Analog Throttle Pedals
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            AnalogPedal(
+                                label = "FRENO / R",
+                                accentColor = CrimsonBrake,
+                                heightDp = if (isCompactWidth) 114 else 132,
+                                widthDp = if (isCompactWidth) 66 else 78,
+                                onLevelChanged = { brake = it },
+                                modifier = Modifier.testTag("brake_pedal")
+                            )
+                            AnalogPedal(
+                                label = "ACEL",
+                                accentColor = EmeraldCargo,
+                                heightDp = if (isCompactWidth) 136 else 156,
+                                widthDp = if (isCompactWidth) 70 else 82,
+                                onLevelChanged = { throttle = it },
+                                modifier = Modifier.testTag("throttle_pedal")
+                            )
+                        }
                     }
                 }
             }

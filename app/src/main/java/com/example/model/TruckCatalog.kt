@@ -12,8 +12,8 @@ enum class SteeringMode(val label: String, val description: String) {
 }
 
 enum class CameraMode(val label: String) {
+    CAB("Vista Real"),
     CHASE("Persecución"),
-    CAB("Cabina"),
     HOOD("Capó")
 }
 
