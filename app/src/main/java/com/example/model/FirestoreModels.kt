@@ -19,15 +19,19 @@ data class DriverProfile(
     val unlockedTruckIds: List<String> = listOf("nordic_fh540"),
     val steeringMode: String = SteeringMode.WHEEL.name,
     val steeringSensitivity: Double = 1.0,
-    val cameraMode: String = CameraMode.CAB.name,
+    val cameraMode: String = CameraMode.SIDE_2D.name,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun resolvedSteeringMode(): SteeringMode =
         enumValues<SteeringMode>().firstOrNull { it.name == steeringMode } ?: SteeringMode.WHEEL
 
-    fun resolvedCameraMode(): CameraMode =
-        enumValues<CameraMode>().firstOrNull { it.name == cameraMode } ?: CameraMode.CAB
+    fun resolvedCameraMode(): CameraMode = when (cameraMode) {
+        CameraMode.SIDE_2D.name, "CHASE" -> CameraMode.SIDE_2D
+        CameraMode.TOPDOWN_2D.name, "HOOD" -> CameraMode.TOPDOWN_2D
+        CameraMode.CAB_2D.name, "CAB" -> CameraMode.CAB_2D
+        else -> CameraMode.SIDE_2D
+    }
 
     fun driverRankTitle(): String = when {
         xp >= 5000 -> "Leyenda del Asfalto"

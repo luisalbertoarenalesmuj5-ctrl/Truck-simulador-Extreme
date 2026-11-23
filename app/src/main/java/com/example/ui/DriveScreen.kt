@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -69,11 +72,9 @@ import com.example.model.RouteSpec
 import com.example.model.SteeringMode
 import com.example.model.TruckSpec
 import com.example.sim.ControlInputs
-import com.example.sim.TelemetrySnapshot
 import com.example.sim.TiltSteeringController
-import com.example.sim.TruckGlViewport
+import com.example.sim.Truck2DViewport
 import com.example.sim.TruckPhysicsEngine
-import com.example.sim.TruckSimRenderer
 import com.example.ui.theme.AmberDiesel
 import com.example.ui.theme.CabMetal
 import com.example.ui.theme.CobaltBeacon
@@ -99,13 +100,13 @@ fun DriveScreen(
     val scope = rememberCoroutineScope()
 
     val physics = remember(truck.id, route.id) { TruckPhysicsEngine(truck, route) }
-    val renderer = remember(context, physics) { TruckSimRenderer(context, physics, truck) }
     var visualClockSec by remember { mutableFloatStateOf(0f) }
 
     var steeringMode by remember { mutableStateOf(initialSteeringMode) }
     var sensitivity by remember { mutableFloatStateOf(initialSensitivity) }
     var cameraMode by remember { mutableStateOf(initialCameraMode) }
     var paused by remember { mutableStateOf(false) }
+    var showFullMap by remember { mutableStateOf(false) }
 
     var throttle by remember { mutableFloatStateOf(0f) }
     var brake by remember { mutableFloatStateOf(0f) }
@@ -224,21 +225,24 @@ fun DriveScreen(
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(ObsidianNight)) {
         val isCompactWidth = maxWidth < 600.dp
 
-        // 1. Full-Bleed Real-Time Viewport
-        TruckGlViewport(
-            renderer = renderer,
+        // 1. Full-Bleed Pure 2D Ultra-Realistic Engine Viewport (Zero 3D)
+        Truck2DViewport(
+            physics = physics,
+            truck = truck,
+            route = route,
             cameraMode = cameraMode,
+            paused = paused,
             modifier = Modifier.fillMaxSize()
         )
 
-        // 1b. Photorealistic Cabin Interior Overlay in Vista Real (CAB) mode
-        if (!telemetry.driverOnFoot && cameraMode == CameraMode.CAB) {
+        // 1b. 2D Cabin Interior Overlay in Cabina 2D perspective
+        if (!telemetry.driverOnFoot && cameraMode == CameraMode.CAB_2D) {
             RealCockpitOverlay(
                 speedKmh = telemetry.speedKmh,
                 rpm = telemetry.rpm,
                 steerNorm = telemetry.steerAngleNorm,
                 upcomingCurvature = telemetry.upcomingCurvature,
-                environment = route.environment,
+                weather = telemetry.weatherCondition,
                 simTimeSec = visualClockSec
             )
         }
@@ -269,86 +273,34 @@ fun DriveScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Speedometer + Gear + RPM Cluster
-                Surface(
-                    color = ObsidianNight.copy(alpha = 0.80f),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.border(1.dp, GunmetalBorder, RoundedCornerShape(16.dp))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Column {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(
-                                    text = "${telemetry.speedKmh}",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    color = if (telemetry.speeding) CrimsonBrake else Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    text = "km/h",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF9FB0C3),
-                                    modifier = Modifier.padding(bottom = 4.dp)
-                                )
-                            }
-                            // RPM progress bar
-                            LinearProgressIndicator(
-                                progress = { (telemetry.rpm / 2200f).coerceIn(0f, 1f) },
-                                color = if (telemetry.rpm > 1850) CrimsonBrake else AmberDiesel,
-                                trackColor = CabMetal,
-                                modifier = Modifier
-                                    .width(78.dp)
-                                    .height(4.dp)
-                                    .clip(CircleShape)
-                            )
-                        }
+                // 2D Analog Arc Speedometer + RPM + Gear + Diesel Fuel Cluster
+                SpeedFuelCluster(
+                    speedKmh = telemetry.speedKmh,
+                    rpm = telemetry.rpm,
+                    gearLabel = telemetry.gearLabel,
+                    speedLimitKmh = telemetry.speedLimitKmh,
+                    speeding = telemetry.speeding,
+                    fuelPercent = telemetry.fuelPercent,
+                    lowFuelWarning = telemetry.lowFuelWarning,
+                    compact = isCompactWidth
+                )
 
-                        // Gear indicator badge
-                        Surface(
-                            color = AmberDiesel.copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.border(1.dp, AmberDiesel, RoundedCornerShape(10.dp))
-                        ) {
-                            Text(
-                                text = telemetry.gearLabel,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = AmberDiesel,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
-                        }
-
-                        // Speed limit circle
-                        Surface(
-                            color = Color.White,
-                            shape = CircleShape,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .border(3.dp, CrimsonBrake, CircleShape)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "${telemetry.speedLimitKmh}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = ObsidianNight,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Right Top Quick Buttons (Curve Radar, Camera Switch, Pause)
+                // Right Top Quick Cluster (2D Road Map, Curve Radar, Camera 2D Switch, Pause)
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CurveRadarIndicator(curvature = telemetry.upcomingCurvature)
+                    RoadMapMiniPanel(
+                        route = route,
+                        road = physics.road,
+                        progressFraction = telemetry.progressFraction,
+                        landmarks = physics.landmarks,
+                        onOpenFullMap = { showFullMap = true }
+                    )
+
+                    if (!isCompactWidth) {
+                        CurveRadarIndicator(curvature = telemetry.upcomingCurvature)
+                    }
 
                     Surface(
                         onClick = {
@@ -375,13 +327,13 @@ fun DriveScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Cameraswitch,
-                                contentDescription = "Cambiar cámara",
+                                contentDescription = "Cambiar cámara 2D",
                                 tint = if (telemetry.driverOnFoot) Color(0xFF6B7C90) else CobaltBeacon,
                                 modifier = Modifier.size(20.dp)
                             )
                             if (!isCompactWidth) {
                                 Text(
-                                    text = if (telemetry.driverOnFoot) "3ª Persona" else cameraMode.label,
+                                    text = if (telemetry.driverOnFoot) "A Pie 2D" else cameraMode.label,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White
                                 )
@@ -438,19 +390,30 @@ fun DriveScreen(
                             .height(6.dp)
                             .clip(CircleShape)
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Icon(
                             imageVector = Icons.Filled.LocalGasStation,
-                            contentDescription = "Combustible",
-                            tint = CobaltBeacon,
-                            modifier = Modifier.size(14.dp)
+                            contentDescription = "Combustible Diésel",
+                            tint = if (telemetry.lowFuelWarning) CrimsonBrake else AmberDiesel,
+                            modifier = Modifier.size(15.dp)
                         )
-                        Spacer(Modifier.width(3.dp))
-                        Text(
-                            text = "${telemetry.fuelPercent}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
+                        Column {
+                            Text(
+                                text = "${telemetry.fuelPercent}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (telemetry.lowFuelWarning) CrimsonBrake else Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            LinearProgressIndicator(
+                                progress = { (telemetry.fuelPercent / 100f).coerceIn(0f, 1f) },
+                                color = if (telemetry.lowFuelWarning) CrimsonBrake else AmberDiesel,
+                                trackColor = CabMetal,
+                                modifier = Modifier
+                                    .width(34.dp)
+                                    .height(3.dp)
+                                    .clip(CircleShape)
+                            )
+                        }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -468,88 +431,185 @@ fun DriveScreen(
                     }
                 }
             }
-            // Quick mode bar: Active Camera badge + Exit Truck ("Bajar / Hombre") trigger
+            // Quick mode bar: Perspective 2D badge, Day/Night & Weather toggle, Refuel button, and Hombre A Pie
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    onClick = {
-                        if (!telemetry.driverOnFoot) {
-                            val all = CameraMode.entries
-                            cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
-                        }
-                    },
-                    color = ObsidianNight.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .height(48.dp)
-                        .border(1.dp, CobaltBeacon.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                        .testTag("badge_camera_mode")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Visibility,
-                            contentDescription = "Cámara activa",
-                            tint = CobaltBeacon,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (telemetry.driverOnFoot) "Hombre • A Pie" else cameraMode.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                if (!telemetry.driverOnFoot) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         onClick = {
-                            if (telemetry.canExitTruck) {
-                                throttle = 0f
-                                brake = 0f
-                                steerInput = 0f
-                                if (physics.exitTruckToFoot()) {
-                                    telemetry = physics.readTelemetry()
-                                }
-                            } else {
-                                exitHintVisible = true
+                            if (!telemetry.driverOnFoot) {
+                                val all = CameraMode.entries
+                                cameraMode = all[(all.indexOf(cameraMode) + 1) % all.size]
                             }
                         },
-                        color = if (telemetry.canExitTruck) AmberDiesel.copy(alpha = 0.22f) else ObsidianNight.copy(alpha = 0.72f),
+                        color = ObsidianNight.copy(alpha = 0.78f),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .height(48.dp)
-                            .border(
-                                1.dp,
-                                if (telemetry.canExitTruck) AmberDiesel else GunmetalBorder,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .testTag("btn_exit_cab_foot")
+                            .border(1.dp, CobaltBeacon.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                            .testTag("badge_camera_mode")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.DirectionsWalk,
-                                contentDescription = "Bajar del camión",
-                                tint = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
-                                modifier = Modifier.size(18.dp)
+                                imageVector = Icons.Filled.Visibility,
+                                contentDescription = "Cámara 2D activa",
+                                tint = CobaltBeacon,
+                                modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "Bajar • Hombre",
+                                text = if (telemetry.driverOnFoot) "Hombre 2D" else cameraMode.label,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
+                                color = Color.White,
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+                    }
+
+                    // Dynamic Day/Night & Weather quick switcher
+                    Surface(
+                        onClick = {
+                            physics.cycleTimeOfDayPreset()
+                            telemetry = physics.readTelemetry()
+                        },
+                        color = ObsidianNight.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
+                            .testTag("btn_cycle_daynight")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.WbSunny,
+                                contentDescription = "Cambiar ciclo día y noche",
+                                tint = AmberDiesel,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = telemetry.dayPhaseLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = {
+                            physics.cycleWeatherCondition()
+                            telemetry = physics.readTelemetry()
+                        },
+                        color = ObsidianNight.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
+                            .testTag("btn_cycle_weather")
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 9.dp)) {
+                            Text(
+                                text = telemetry.weatherCondition.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CobaltBeacon,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (telemetry.nearFuelStation && !telemetry.driverOnFoot) {
+                        Surface(
+                            onClick = {
+                                if (physics.refuelAtStation()) {
+                                    telemetry = physics.readTelemetry()
+                                }
+                            },
+                            color = EmeraldCargo.copy(alpha = 0.25f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .border(1.5.dp, EmeraldCargo, RoundedCornerShape(12.dp))
+                                .testTag("btn_refuel_diesel")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.LocalGasStation,
+                                    contentDescription = "Repostar Diésel",
+                                    tint = EmeraldCargo,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Text(
+                                    text = "REPOSTAR",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = EmeraldCargo,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    if (!telemetry.driverOnFoot) {
+                        Surface(
+                            onClick = {
+                                if (telemetry.canExitTruck) {
+                                    throttle = 0f
+                                    brake = 0f
+                                    steerInput = 0f
+                                    if (physics.exitTruckToFoot()) {
+                                        telemetry = physics.readTelemetry()
+                                    }
+                                } else {
+                                    exitHintVisible = true
+                                }
+                            },
+                            color = if (telemetry.canExitTruck) AmberDiesel.copy(alpha = 0.22f) else ObsidianNight.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .border(
+                                    1.dp,
+                                    if (telemetry.canExitTruck) AmberDiesel else GunmetalBorder,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .testTag("btn_exit_cab_foot")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.DirectionsWalk,
+                                    contentDescription = "Bajar del camión",
+                                    tint = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                if (!isCompactWidth || !telemetry.nearFuelStation) {
+                                    Text(
+                                        text = "Hombre",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (telemetry.canExitTruck) AmberDiesel else Color(0xFF9FB0C3),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -611,7 +671,7 @@ fun DriveScreen(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     AuxiliaryTruckBar(
                         retarderOn = retarderOn,
@@ -634,6 +694,26 @@ fun DriveScreen(
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
 
+                    if (isCompactWidth) {
+                        GearShifterModule(
+                            gearLabel = telemetry.gearLabel,
+                            manualMode = telemetry.manualTransmission,
+                            onShiftDown = {
+                                physics.shiftGearDown()
+                                telemetry = physics.readTelemetry()
+                            },
+                            onShiftUp = {
+                                physics.shiftGearUp()
+                                telemetry = physics.readTelemetry()
+                            },
+                            onToggleMode = {
+                                physics.toggleTransmissionMode()
+                                telemetry = physics.readTelemetry()
+                            },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -652,6 +732,27 @@ fun DriveScreen(
                             SteeringMode.TILT -> TiltIndicatorWidget(
                                 steerNorm = telemetry.steerAngleNorm,
                                 onRecalibrate = { tiltController.recalibrateZero() }
+                            )
+                        }
+
+                        if (!isCompactWidth) {
+                            // Center: Interactive Gear Shifter (- / AUTO|MAN / +)
+                            GearShifterModule(
+                                gearLabel = telemetry.gearLabel,
+                                manualMode = telemetry.manualTransmission,
+                                onShiftDown = {
+                                    physics.shiftGearDown()
+                                    telemetry = physics.readTelemetry()
+                                },
+                                onShiftUp = {
+                                    physics.shiftGearUp()
+                                    telemetry = physics.readTelemetry()
+                                },
+                                onToggleMode = {
+                                    physics.toggleTransmissionMode()
+                                    telemetry = physics.readTelemetry()
+                                },
+                                modifier = Modifier.padding(bottom = 8.dp)
                             )
                         }
 
@@ -895,6 +996,18 @@ fun DriveScreen(
                     }
                 }
             }
+        }
+
+        // 6. Full Interactive 2D Road Map Modal
+        if (showFullMap) {
+            RoadMapDialog(
+                route = route,
+                road = physics.road,
+                progressFraction = telemetry.progressFraction,
+                landmarks = physics.landmarks,
+                fuelPercent = telemetry.fuelPercent,
+                onDismiss = { showFullMap = false }
+            )
         }
     }
 }

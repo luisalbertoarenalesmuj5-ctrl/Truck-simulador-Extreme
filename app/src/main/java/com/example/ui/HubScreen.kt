@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -75,8 +76,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -555,11 +560,40 @@ private fun RouteCard(route: RouteSpec, onLaunch: () -> Unit) {
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 MiniStatBadge("${route.displayDistanceKm.toInt()} km")
                 MiniStatBadge("Límite ${route.speedLimitKmh} km/h")
                 MiniStatBadge("Dificultad: ${route.difficultyLabel}")
+            }
+
+            // 2D Highway Route Profile Preview Bar
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(ObsidianNight.copy(alpha = 0.65f))
+                    .border(1.dp, GunmetalBorder.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+            ) {
+                val padX = 12f
+                val wSpan = size.width - padX * 2f
+                val midY = size.height * 0.5f
+                val amp = size.height * 0.28f * route.curveIntensity.coerceIn(0.2f, 1.4f)
+                val path = Path().apply {
+                    moveTo(padX, midY)
+                    cubicTo(
+                        padX + wSpan * 0.30f, midY - amp,
+                        padX + wSpan * 0.70f, midY + amp,
+                        padX + wSpan, midY
+                    )
+                }
+                drawPath(path, color = CobaltBeacon.copy(alpha = 0.78f), style = Stroke(width = 3.5f, cap = StrokeCap.Round))
+                drawCircle(color = EmeraldCargo, radius = 4f, center = Offset(padX, midY))
+                drawCircle(color = AmberDiesel, radius = 4f, center = Offset(padX + wSpan * 0.45f, midY))
+                drawCircle(color = AmberDiesel, radius = 4f, center = Offset(padX + wSpan * 0.80f, midY))
+                drawCircle(color = GoldTrophy, radius = 4.5f, center = Offset(padX + wSpan, midY))
             }
 
                 Button(
@@ -661,6 +695,14 @@ private fun GarageFleetTab(
                     )
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Truck2DShowroomPreview(
+                        truck = truck,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(114.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(1.dp, GunmetalBorder, RoundedCornerShape(12.dp))
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -838,7 +880,7 @@ private fun CareerAndControlsTab(
                         colors = SliderDefaults.colors(thumbColor = AmberDiesel, activeTrackColor = AmberDiesel)
                     )
 
-                    Text("Vista de Cámara Inicial", style = MaterialTheme.typography.labelLarge, color = CobaltBeacon)
+                    Text("Perspectiva 2D Inicial", style = MaterialTheme.typography.labelLarge, color = CobaltBeacon)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         CameraMode.entries.forEach { cam ->
                             val selected = cam == cameraMode

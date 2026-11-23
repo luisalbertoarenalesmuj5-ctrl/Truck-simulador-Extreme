@@ -2,6 +2,7 @@ package com.example.sim
 
 import com.example.model.RouteSpec
 import com.example.model.TruckSpec
+import com.example.model.WeatherCondition
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -9,7 +10,6 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 data class RoadPoint(
     val s: Float,
@@ -45,13 +45,34 @@ data class TrafficVehicle(
     val colorRgb: FloatArray
 )
 
+enum class LandmarkKind {
+    CITY_ORIGIN,
+    CITY_MIDTOWN,
+    CITY_DESTINATION,
+    FUEL_STATION,
+    VILLAGE_HOUSES,
+    WIND_FARM,
+    HIGHWAY_GANTRY
+}
+
+data class WorldLandmark(
+    val s: Float,
+    val kind: LandmarkKind,
+    val label: String
+)
+
 data class TelemetrySnapshot(
     val speedKmh: Int = 0,
     val rpm: Int = 650,
     val gearLabel: String = "N",
+    val currentGear: Int = 0,
+    val manualTransmission: Boolean = false,
     val fuelPercent: Int = 100,
+    val lowFuelWarning: Boolean = false,
+    val nearFuelStation: Boolean = false,
     val damagePercent: Int = 0,
     val progressFraction: Float = 0f,
+    val roadProgressMeters: Float = 0f,
     val remainingDisplayKm: Double = 0.0,
     val elapsedSeconds: Long = 0L,
     val upcomingCurvature: Float = 0f,
@@ -68,7 +89,10 @@ data class TelemetrySnapshot(
     val rightBlinker: Boolean = false,
     val driverOnFoot: Boolean = false,
     val nearCabDoor: Boolean = true,
-    val canExitTruck: Boolean = true
+    val canExitTruck: Boolean = true,
+    val timeOfDay: Float = 0.36f,
+    val dayPhaseLabel: String = "Día",
+    val weatherCondition: WeatherCondition = WeatherCondition.CLEAR
 )
 
 class RoadSpline(route: RouteSpec) {
@@ -224,8 +248,12 @@ class TruckPhysicsEngine(
         private set
     var currentGear = 0 // -1 = R, 0 = N, 1..12 = Forward
         private set
+    var manualTransmission = false
+        private set
 
     var fuelLiters = truck.fuelCapacityLiters
+        private set
+    var nearFuelStation = false
         private set
     var damageAccum = 0f
         private set
@@ -244,7 +272,17 @@ class TruckPhysicsEngine(
     var finished = false
         private set
 
-    // Articulated 3D driver ("Hombre") state when walking outside the cab
+    // Dynamic 2D Day/Night & Weather state
+    var timeOfDay = route.environment.initialTimeOfDay
+        private set
+    var weatherCondition = route.environment.defaultWeather
+        private set
+    var rainIntensity = 0f
+        private set
+    var fogDensity = 0f
+        private set
+
+    // Articulated 2D driver ("Hombre") state when walking outside the cab
     var driverOnFoot = false
         private set
     var driverX = 0f
@@ -265,6 +303,23 @@ class TruckPhysicsEngine(
     private var smoothThrottle = 0f
 
     val traffic: MutableList<TrafficVehicle> = mutableListOf()
+
+    val fuelStationPositions: List<Float> = listOf(
+        route.simLengthMeters * 0.34f,
+        route.simLengthMeters * 0.70f
+    )
+
+    val landmarks: List<WorldLandmark> = buildList {
+        add(WorldLandmark(15f, LandmarkKind.CITY_ORIGIN, route.originCity))
+        add(WorldLandmark(route.simLengthMeters * 0.16f, LandmarkKind.VILLAGE_HOUSES, "Valle"))
+        add(WorldLandmark(route.simLengthMeters * 0.25f, LandmarkKind.WIND_FARM, "Parque Eólico"))
+        add(WorldLandmark(fuelStationPositions[0], LandmarkKind.FUEL_STATION, "Diésel Express"))
+        add(WorldLandmark(route.simLengthMeters * 0.49f, LandmarkKind.CITY_MIDTOWN, "Área Industrial"))
+        add(WorldLandmark(route.simLengthMeters * 0.60f, LandmarkKind.VILLAGE_HOUSES, "Mirador"))
+        add(WorldLandmark(fuelStationPositions[1], LandmarkKind.FUEL_STATION, "Ruta Diésel 24h"))
+        add(WorldLandmark(route.simLengthMeters * 0.83f, LandmarkKind.HIGHWAY_GANTRY, "Peaje"))
+        add(WorldLandmark(route.simLengthMeters - 18f, LandmarkKind.CITY_DESTINATION, route.destinationCity))
+    }
 
     private val gearRatios = floatArrayOf(
         0f, 14.5f, 11.2f, 8.8f, 6.9f, 5.4f, 4.2f, 3.3f, 2.6f, 2.05f, 1.60f, 1.28f, 1.02f
@@ -295,12 +350,17 @@ class TruckPhysicsEngine(
             rpm = 680f
             currentGear = 0
             fuelLiters = truck.fuelCapacityLiters
+            nearFuelStation = false
             damageAccum = 0f
             collisionFlash = 0f
             roadIndexHint = 4
             roadProgressMeters = 18f
             elapsedSimTime = 0f
             finished = false
+            timeOfDay = route.environment.initialTimeOfDay
+            weatherCondition = route.environment.defaultWeather
+            rainIntensity = targetRainFor(weatherCondition)
+            fogDensity = targetFogFor(weatherCondition)
             cabPitchOffset = 0f
             cabRollOffset = 0f
             driverOnFoot = false
@@ -315,6 +375,80 @@ class TruckPhysicsEngine(
             smoothThrottle = 0f
             spawnTraffic()
         }
+    }
+
+    fun toggleTransmissionMode(): Boolean {
+        synchronized(stateLock) {
+            manualTransmission = !manualTransmission
+            if (manualTransmission && currentGear == 0 && speedMs > 1.0f) {
+                currentGear = selectForwardGear(abs(speedMs))
+            }
+            return manualTransmission
+        }
+    }
+
+    fun shiftGearUp() {
+        synchronized(stateLock) {
+            if (!manualTransmission) manualTransmission = true
+            if (currentGear < 12) {
+                if (currentGear == -1 && speedMs < -1.0f) return
+                currentGear += 1
+            }
+        }
+    }
+
+    fun shiftGearDown() {
+        synchronized(stateLock) {
+            if (!manualTransmission) manualTransmission = true
+            if (currentGear > -1) {
+                if (currentGear == 0 && speedMs > 1.5f) return
+                currentGear -= 1
+            }
+        }
+    }
+
+    fun cycleTimeOfDayPreset() {
+        synchronized(stateLock) {
+            timeOfDay = when {
+                timeOfDay < 0.55f -> 0.72f // Day -> Sunset
+                timeOfDay < 0.82f -> 0.94f // Sunset -> Night
+                else -> 0.36f              // Night -> Day
+            }
+        }
+    }
+
+    fun cycleWeatherCondition() {
+        synchronized(stateLock) {
+            val all = WeatherCondition.entries
+            weatherCondition = all[(all.indexOf(weatherCondition) + 1) % all.size]
+        }
+    }
+
+    fun refuelAtStation(): Boolean {
+        synchronized(stateLock) {
+            if (!isAtFuelStation()) return false
+            fuelLiters = truck.fuelCapacityLiters
+            return true
+        }
+    }
+
+    private fun isAtFuelStation(): Boolean {
+        if (abs(speedMs) > 6.5f) return false
+        return fuelStationPositions.any { abs(roadProgressMeters - it) <= 28f }
+    }
+
+    private fun targetRainFor(w: WeatherCondition): Float = when (w) {
+        WeatherCondition.CLEAR -> 0f
+        WeatherCondition.RAIN -> 0.72f
+        WeatherCondition.FOG -> 0.12f
+        WeatherCondition.STORM -> 1.0f
+    }
+
+    private fun targetFogFor(w: WeatherCondition): Float = when (w) {
+        WeatherCondition.CLEAR -> 0f
+        WeatherCondition.RAIN -> 0.28f
+        WeatherCondition.FOG -> 0.85f
+        WeatherCondition.STORM -> 0.62f
     }
 
     fun exitTruckToFoot(): Boolean {
@@ -400,9 +534,14 @@ class TruckPhysicsEngine(
             collisionFlash = max(0f, collisionFlash - dt * 2.4f)
 
             val ctrl = inputs
+            timeOfDay = (timeOfDay + dt / 135f) % 1f
+            rainIntensity += (targetRainFor(weatherCondition) - rainIntensity) * min(1f, dt * 1.8f)
+            fogDensity += (targetFogFor(weatherCondition) - fogDensity) * min(1f, dt * 1.8f)
+
             for (stepIdx in 0 until subSteps) {
                 stepPhysics(subDt, ctrl)
             }
+            nearFuelStation = isAtFuelStation()
         }
     }
 
@@ -424,7 +563,7 @@ class TruckPhysicsEngine(
         val steerRate = if (abs(ctrl.steerInput) > 0.03f) 3.8f else 5.2f
         steerWheelAngleRad += (targetSteer - steerWheelAngleRad) * min(1f, dt * steerRate)
 
-        // Automatic / sequential 12-speed + Reverse transmission logic
+        // Automatic OR Manual 12-speed + Reverse transmission logic
         var driveForce = 0f
         var brakeForce = 0f
 
@@ -432,12 +571,36 @@ class TruckPhysicsEngine(
             brakeForce += 68000f * truck.brakingPower
             if (absSpeed < 0.25f) {
                 speedMs = 0f
-                currentGear = 0
+                if (!manualTransmission) currentGear = 0
+            }
+        } else if (manualTransmission) {
+            if (ctrl.throttle > 0.02f && fuelLiters > 0f) {
+                when {
+                    currentGear > 0 -> {
+                        val gearMaxMs = (maxSpeedMs / 12f) * currentGear * 1.08f
+                        val ratio = gearRatios[currentGear]
+                        val limiter = if (speedMs > gearMaxMs) 0.08f else 1.0f
+                        val engineForce = (truck.torqueNm * ratio * 1.98f) * ctrl.throttle * limiter
+                        driveForce += engineForce.coerceAtMost(115000f)
+                        fuelLiters = max(0f, fuelLiters - dt * (0.04f + 0.16f * ctrl.throttle))
+                    }
+                    currentGear < 0 -> {
+                        val reverseForce = (truck.torqueNm * 7.8f) * ctrl.throttle
+                        driveForce -= reverseForce.coerceAtMost(34000f)
+                        fuelLiters = max(0f, fuelLiters - dt * (0.04f + 0.14f * ctrl.throttle))
+                    }
+                    else -> {
+                        // Neutral revving
+                        fuelLiters = max(0f, fuelLiters - dt * 0.02f)
+                    }
+                }
+            }
+            if (ctrl.brake > 0.02f) {
+                brakeForce += 56000f * truck.brakingPower * ctrl.brake
             }
         } else {
             if (ctrl.throttle > 0.02f && fuelLiters > 0f) {
                 if (currentGear <= 0) currentGear = 1
-                // Select optimal gear for current speed
                 val targetGear = selectForwardGear(absSpeed)
                 currentGear = targetGear
                 val ratio = gearRatios[currentGear]
@@ -448,7 +611,6 @@ class TruckPhysicsEngine(
                 if (speedMs > 0.8f) {
                     brakeForce += 56000f * truck.brakingPower * ctrl.brake
                 } else {
-                    // Engage Reverse when stopped
                     currentGear = -1
                     val reverseForce = (truck.torqueNm * 7.5f) * ctrl.brake
                     driveForce -= reverseForce.coerceAtMost(32000f)
@@ -748,6 +910,8 @@ class TruckPhysicsEngine(
             out.wheelSpinAngle = wheelSpinAngle
             out.steerWheelAngleRad = steerWheelAngleRad
             out.roadIndexHint = roadIndexHint
+            out.roadProgressMeters = roadProgressMeters
+            out.laneOffset = laneOffset
             out.speedMs = speedMs
             out.headlightsOn = inputs.headlightsOn
             out.braking = inputs.brake > 0.05f || inputs.parkingBrake || (inputs.retarderOn && speedMs > 3.5f)
@@ -761,9 +925,22 @@ class TruckPhysicsEngine(
             out.driverYaw = driverYaw
             out.driverWalkCycle = driverWalkCycle
             out.driverWalkSpeed = driverWalkSpeed
+            if (driverOnFoot) {
+                val (_, dLat, dPt) = road.project(driverX, driverZ, roadIndexHint)
+                out.driverRoadS = dPt.s
+                out.driverLaneOffset = dLat
+            } else {
+                out.driverRoadS = roadProgressMeters
+                out.driverLaneOffset = laneOffset
+            }
             out.throttleLevel = smoothThrottle
             out.currentGear = currentGear
+            out.rpm = rpm
             out.simClock = simClock
+            out.timeOfDay = timeOfDay
+            out.rainIntensity = rainIntensity
+            out.fogDensity = fogDensity
+            out.nearFuelStation = nearFuelStation
             out.trafficCopy.clear()
             for (v in traffic) {
                 out.trafficCopy.add(v.copy())
@@ -777,19 +954,32 @@ class TruckPhysicsEngine(
             val gearStr = when {
                 currentGear < 0 -> "R"
                 currentGear == 0 -> "N"
+                manualTransmission -> "M$currentGear"
                 else -> "D$currentGear"
             }
             val progress = (roadProgressMeters / route.simLengthMeters).coerceIn(0f, 1f)
             val remKm = route.displayDistanceKm * (1.0 - progress)
             val previewPt = road.sampleAtDistance(roadProgressMeters + 72f)
             val ctrl = inputs
+            val fuelPct = ((fuelLiters / truck.fuelCapacityLiters) * 100f).toInt().coerceIn(0, 100)
+            val phaseLabel = when {
+                timeOfDay < 0.22f || timeOfDay >= 0.84f -> "Noche"
+                timeOfDay < 0.34f -> "Amanecer"
+                timeOfDay < 0.66f -> "Día"
+                else -> "Atardecer"
+            }
             return TelemetrySnapshot(
                 speedKmh = kmh,
                 rpm = rpm.toInt(),
                 gearLabel = gearStr,
-                fuelPercent = ((fuelLiters / truck.fuelCapacityLiters) * 100f).toInt().coerceIn(0, 100),
+                currentGear = currentGear,
+                manualTransmission = manualTransmission,
+                fuelPercent = fuelPct,
+                lowFuelWarning = fuelPct <= 20,
+                nearFuelStation = nearFuelStation,
                 damagePercent = damageAccum.toInt().coerceIn(0, 100),
                 progressFraction = progress,
+                roadProgressMeters = roadProgressMeters,
                 remainingDisplayKm = remKm,
                 elapsedSeconds = elapsedSimTime.toLong().coerceAtLeast(1L),
                 upcomingCurvature = previewPt.curvature,
@@ -806,7 +996,10 @@ class TruckPhysicsEngine(
                 rightBlinker = ctrl.rightBlinker,
                 driverOnFoot = driverOnFoot,
                 nearCabDoor = nearCabDoor,
-                canExitTruck = !driverOnFoot && abs(speedMs) < 1.8f
+                canExitTruck = !driverOnFoot && abs(speedMs) < 1.8f,
+                timeOfDay = timeOfDay,
+                dayPhaseLabel = phaseLabel,
+                weatherCondition = weatherCondition
             )
         }
     }
@@ -838,6 +1031,8 @@ class RenderSnapshot {
     var wheelSpinAngle = 0f
     var steerWheelAngleRad = 0f
     var roadIndexHint = 0
+    var roadProgressMeters = 18f
+    var laneOffset = 2.15f
     var speedMs = 0f
     var headlightsOn = true
     var braking = false
@@ -851,8 +1046,15 @@ class RenderSnapshot {
     var driverYaw = 0f
     var driverWalkCycle = 0f
     var driverWalkSpeed = 0f
+    var driverRoadS = 18f
+    var driverLaneOffset = 2.15f
     var throttleLevel = 0f
     var currentGear = 0
+    var rpm = 680f
     var simClock = 0f
+    var timeOfDay = 0.36f
+    var rainIntensity = 0f
+    var fogDensity = 0f
+    var nearFuelStation = false
     val trafficCopy = ArrayList<TrafficVehicle>(20)
 }

@@ -12,19 +12,28 @@ enum class SteeringMode(val label: String, val description: String) {
 }
 
 enum class CameraMode(val label: String) {
-    CAB("Vista Real"),
-    CHASE("Persecución"),
-    HOOD("Capó")
+    SIDE_2D("Lateral 2D"),
+    TOPDOWN_2D("Aérea 2D"),
+    CAB_2D("Cabina 2D")
+}
+
+enum class WeatherCondition(val label: String) {
+    CLEAR("Despejado"),
+    RAIN("Lluvia"),
+    FOG("Niebla"),
+    STORM("Tormenta")
 }
 
 enum class EnvironmentTheme(
     val label: String,
-    val weatherLabel: String
+    val weatherLabel: String,
+    val initialTimeOfDay: Float,
+    val defaultWeather: WeatherCondition
 ) {
-    ALPINE_DAY("Sierra Alpina", "Día Despejado"),
-    COASTAL_SUNSET("Costa del Pacífico", "Atardecer Dorado"),
-    DESERT_NIGHT("Cañón Nocturno", "Noche Estrellada"),
-    STORM_SUMMIT("Cumbre Extrema", "Niebla y Asfalto Húmedo")
+    ALPINE_DAY("Sierra Alpina", "Día Despejado", 0.36f, WeatherCondition.CLEAR),
+    COASTAL_SUNSET("Costa del Pacífico", "Atardecer Dorado", 0.72f, WeatherCondition.CLEAR),
+    DESERT_NIGHT("Cañón Nocturno", "Noche Estrellada", 0.94f, WeatherCondition.CLEAR),
+    STORM_SUMMIT("Cumbre Extrema", "Lluvia y Niebla", 0.58f, WeatherCondition.STORM)
 }
 
 data class TruckSpec(

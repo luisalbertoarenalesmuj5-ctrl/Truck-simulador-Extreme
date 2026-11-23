@@ -121,7 +121,7 @@ class CareerRepository(
                     "unlockedTruckIds" to listOf("nordic_fh540"),
                     "steeringMode" to SteeringMode.WHEEL.name,
                     "steeringSensitivity" to 1.0,
-                    "cameraMode" to CameraMode.CAB.name,
+                    "cameraMode" to CameraMode.SIDE_2D.name,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )

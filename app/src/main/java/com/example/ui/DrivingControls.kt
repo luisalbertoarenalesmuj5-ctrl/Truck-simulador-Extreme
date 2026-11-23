@@ -72,9 +72,18 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Dialog
 import com.example.R
 import com.example.model.EnvironmentTheme
+import com.example.model.RouteSpec
+import com.example.model.TruckSpec
+import com.example.model.WeatherCondition
+import com.example.sim.LandmarkKind
+import com.example.sim.RoadSpline
+import com.example.sim.Truck2DArtwork.drawTruckRig2DSide
+import com.example.sim.WorldLandmark
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -337,9 +346,13 @@ fun AnalogPedal(
         modifier = modifier
             .size(width = widthDp.dp, height = heightDp.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(SteelSlate.copy(alpha = 0.86f))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF283240), Color(0xFF161C24), Color(0xFF0E1319))
+                )
+            )
             .border(
-                width = 1.5.dp,
+                width = if (level > 0.05f) 2.dp else 1.5.dp,
                 color = if (level > 0.05f) accentColor else GunmetalBorder,
                 shape = RoundedCornerShape(16.dp)
             )
@@ -378,11 +391,11 @@ fun AnalogPedal(
                 .fillMaxHeight(level)
                 .background(
                     Brush.verticalGradient(
-                        listOf(accentColor.copy(alpha = 0.78f), accentColor.copy(alpha = 0.35f))
+                        listOf(accentColor.copy(alpha = 0.82f), accentColor.copy(alpha = 0.32f))
                     )
                 )
         )
-        // Pedal ridges + label
+        // Machined rubber-grip pedal ribs + label
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -390,13 +403,14 @@ fun AnalogPedal(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            repeat(4) {
+            repeat(5) {
                 Box(
                     modifier = Modifier
-                        .width((widthDp * 0.56f).dp)
-                        .height(3.dp)
+                        .width((widthDp * 0.62f).dp)
+                        .height(4.dp)
                         .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.25f))
+                        .background(Color(0xFF090C10))
+                        .border(0.5.dp, Color.White.copy(alpha = 0.22f), CircleShape)
                 )
             }
             Text(
@@ -765,7 +779,7 @@ fun RealCockpitOverlay(
     rpm: Int,
     steerNorm: Float,
     upcomingCurvature: Float,
-    environment: EnvironmentTheme,
+    weather: WeatherCondition,
     simTimeSec: Float,
     modifier: Modifier = Modifier
 ) {
@@ -831,8 +845,8 @@ fun RealCockpitOverlay(
                 )
             )
 
-            // Windshield wipers sweeping during Storm Summit
-            if (environment == EnvironmentTheme.STORM_SUMMIT) {
+            // Windshield wipers sweeping during Rain or Storm
+            if (weather == WeatherCondition.RAIN || weather == WeatherCondition.STORM) {
                 val sweepDeg = -18f + (sin(simTimeSec * 3.4f) * 0.5f + 0.5f) * 68f
                 val wiperBaseY = (imgTop + imgH * 0.56f).coerceIn(size.height * 0.42f, size.height * 0.72f)
                 val wiperLen = (imgW * 0.28f).coerceAtLeast(160f)
@@ -1002,4 +1016,469 @@ fun RealCockpitOverlay(
         }
     }
 }
+
+@Composable
+fun GearShifterModule(
+    gearLabel: String,
+    manualMode: Boolean,
+    onShiftDown: () -> Unit,
+    onShiftUp: () -> Unit,
+    onToggleMode: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = SteelSlate.copy(alpha = 0.88f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                onClick = onShiftDown,
+                color = CabMetal,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(1.dp, GunmetalBorder, RoundedCornerShape(10.dp))
+                    .testTag("btn_gear_down")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "-",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Surface(
+                onClick = onToggleMode,
+                color = if (manualMode) AmberDiesel.copy(alpha = 0.22f) else CobaltBeacon.copy(alpha = 0.18f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .height(48.dp)
+                    .border(
+                        1.dp,
+                        if (manualMode) AmberDiesel else CobaltBeacon,
+                        RoundedCornerShape(10.dp)
+                    )
+                    .testTag("btn_gear_mode")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = gearLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (manualMode) AmberDiesel else Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (manualMode) "MANUAL" else "AUTO",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (manualMode) AmberDiesel else CobaltBeacon
+                    )
+                }
+            }
+
+            Surface(
+                onClick = onShiftUp,
+                color = CabMetal,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(1.dp, GunmetalBorder, RoundedCornerShape(10.dp))
+                    .testTag("btn_gear_up")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "+",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = EmeraldCargo,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RoadMapMiniPanel(
+    route: RouteSpec,
+    road: RoadSpline,
+    progressFraction: Float,
+    landmarks: List<WorldLandmark>,
+    onOpenFullMap: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onOpenFullMap,
+        color = ObsidianNight.copy(alpha = 0.84f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .size(width = 106.dp, height = 56.dp)
+            .border(1.dp, CobaltBeacon.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+            .testTag("btn_road_map")
+    ) {
+        Box(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val padX = 8f
+                val path = Path()
+                val samples = 24
+                for (i in 0..samples) {
+                    val t = i / samples.toFloat()
+                    val pt = road.sampleAtDistance(t * route.simLengthMeters)
+                    val x = padX + t * (w - padX * 2f)
+                    val y = h * 0.55f + (pt.curvature * 1400f).coerceIn(-h * 0.28f, h * 0.28f)
+                    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path, color = Color(0xFF475569), style = Stroke(width = 5f, cap = StrokeCap.Round))
+
+                // Progress highlight
+                val progX = padX + progressFraction.coerceIn(0f, 1f) * (w - padX * 2f)
+                val ptNow = road.sampleAtDistance(progressFraction * route.simLengthMeters)
+                val progY = h * 0.55f + (ptNow.curvature * 1400f).coerceIn(-h * 0.28f, h * 0.28f)
+
+                // Fuel markers on mini map
+                for (lm in landmarks) {
+                    if (lm.kind == LandmarkKind.FUEL_STATION) {
+                        val lt = (lm.s / route.simLengthMeters).coerceIn(0f, 1f)
+                        val fx = padX + lt * (w - padX * 2f)
+                        drawCircle(color = AmberDiesel, radius = 3.5f, center = Offset(fx, h * 0.55f))
+                    }
+                }
+                drawCircle(color = EmeraldCargo, radius = 5.5f, center = Offset(progX, progY))
+                drawCircle(color = Color.White, radius = 2.5f, center = Offset(progX, progY))
+            }
+            Text(
+                text = "MAPA",
+                style = MaterialTheme.typography.labelSmall,
+                color = CobaltBeacon,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+        }
+    }
+}
+
+@Composable
+fun RoadMapDialog(
+    route: RouteSpec,
+    road: RoadSpline,
+    progressFraction: Float,
+    landmarks: List<WorldLandmark>,
+    fuelPercent: Int,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = SteelSlate,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, CobaltBeacon, RoundedCornerShape(20.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "MAPA DE CARRETERAS 2D",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CobaltBeacon
+                        )
+                        Text(
+                            text = "${route.originCity} → ${route.destinationCity}",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                    }
+                    Surface(
+                        color = AmberDiesel.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.border(1.dp, AmberDiesel, RoundedCornerShape(10.dp))
+                    ) {
+                        Text(
+                            text = "Diésel $fuelPercent%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AmberDiesel,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                // Detailed curved route radar map
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(175.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(ObsidianNight)
+                        .border(1.dp, GunmetalBorder, RoundedCornerShape(14.dp))
+                        .padding(14.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val w = size.width
+                        val h = size.height
+                        val pad = 16f
+                        val routePath = Path()
+                        val samples = 48
+                        for (i in 0..samples) {
+                            val t = i / samples.toFloat()
+                            val pt = road.sampleAtDistance(t * route.simLengthMeters)
+                            val x = pad + t * (w - pad * 2f)
+                            val y = h * 0.52f + (pt.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
+                            if (i == 0) routePath.moveTo(x, y) else routePath.lineTo(x, y)
+                        }
+                        drawPath(routePath, color = Color(0xFF334155), style = Stroke(width = 14f, cap = StrokeCap.Round))
+                        drawPath(routePath, color = Color(0xFF64748B), style = Stroke(width = 4f, cap = StrokeCap.Round))
+
+                        // Landmark pins
+                        for (lm in landmarks) {
+                            val lt = (lm.s / route.simLengthMeters).coerceIn(0f, 1f)
+                            val pt = road.sampleAtDistance(lm.s)
+                            val lx = pad + lt * (w - pad * 2f)
+                            val ly = h * 0.52f + (pt.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
+                            val pinCol = when (lm.kind) {
+                                LandmarkKind.FUEL_STATION -> AmberDiesel
+                                LandmarkKind.CITY_ORIGIN, LandmarkKind.CITY_DESTINATION -> EmeraldCargo
+                                LandmarkKind.CITY_MIDTOWN -> CobaltBeacon
+                                else -> Color(0xFF94A3B8)
+                            }
+                            drawCircle(color = pinCol, radius = 7f, center = Offset(lx, ly))
+                        }
+
+                        // Current Truck Position
+                        val ptNow = road.sampleAtDistance(progressFraction * route.simLengthMeters)
+                        val tx = pad + progressFraction.coerceIn(0f, 1f) * (w - pad * 2f)
+                        val ty = h * 0.52f + (ptNow.curvature * 1900f).coerceIn(-h * 0.32f, h * 0.32f)
+                        drawCircle(color = Color.White, radius = 11f, center = Offset(tx, ty))
+                        drawCircle(color = CobaltBeacon, radius = 7f, center = Offset(tx, ty))
+                    }
+                }
+
+                Text(
+                    text = "• Punto Blanco/Azul: Tu Camión  • Ámbar: Gasolineras Diésel  • Verde: Origen/Destino",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF9FB0C3)
+                )
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = AmberDiesel, contentColor = ObsidianNight),
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Text("CERRAR MAPA", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun Truck2DShowroomPreview(
+    truck: TruckSpec,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        // Subtle 2D showroom spotlight backdrop
+        drawRect(
+            brush = Brush.verticalGradient(
+                listOf(Color(0xFF141D29), Color(0xFF0B1018))
+            )
+        )
+        drawRect(
+            color = Color(0xFF1E293B),
+            topLeft = Offset(0f, h * 0.80f),
+            size = Size(w, h * 0.20f)
+        )
+        val scale = (w / 6.8f).coerceAtMost(h / 4.4f)
+        val anchorX = w * 0.34f
+        val groundY = h * 0.82f
+        drawTruckRig2DSide(
+            truck = truck,
+            routeId = "pacific_coast",
+            anchorX = anchorX,
+            groundY = groundY,
+            scale = scale,
+            wheelAngleRad = 0f,
+            cabPitchRad = 0f,
+            bouncePx = 0f,
+            headlightsOn = true,
+            braking = false,
+            reversing = false,
+            blinkerOn = false,
+            nightFactor = 0.25f,
+            throttleLevel = 0f,
+            simClock = 0f,
+            showTrailer = false
+        )
+    }
+}
+
+@Composable
+fun SpeedFuelCluster(
+    speedKmh: Int,
+    rpm: Int,
+    gearLabel: String,
+    speedLimitKmh: Int,
+    speeding: Boolean,
+    fuelPercent: Int,
+    lowFuelWarning: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = ObsidianNight.copy(alpha = 0.84f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .border(1.dp, GunmetalBorder, RoundedCornerShape(16.dp))
+            .testTag("speed_fuel_cluster")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = if (compact) 10.dp else 14.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)
+        ) {
+            // Precision 2D Analog Arc Speed & RPM Dial
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(if (compact) 54.dp else 62.dp)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val pad = 4f
+                    val arcSize = Size(size.width - pad * 2f, size.height - pad * 2f)
+                    val topLeft = Offset(pad, pad)
+                    drawArc(
+                        color = Color(0xFF283240),
+                        startAngle = 140f,
+                        sweepAngle = 260f,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6f, cap = StrokeCap.Round)
+                    )
+                    val speedSweep = ((speedKmh / 125f).coerceIn(0f, 1f)) * 260f
+                    drawArc(
+                        color = if (speeding) CrimsonBrake else CobaltBeacon,
+                        startAngle = 140f,
+                        sweepAngle = speedSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6f, cap = StrokeCap.Round)
+                    )
+                    // Inner thin RPM ring
+                    val rpmPad = 11f
+                    val rpmArc = Size(size.width - rpmPad * 2f, size.height - rpmPad * 2f)
+                    val rpmSweep = ((rpm / 2200f).coerceIn(0f, 1f)) * 260f
+                    drawArc(
+                        color = if (rpm > 1850) CrimsonBrake else AmberDiesel,
+                        startAngle = 140f,
+                        sweepAngle = rpmSweep,
+                        useCenter = false,
+                        topLeft = Offset(rpmPad, rpmPad),
+                        size = rpmArc,
+                        style = Stroke(width = 3f, cap = StrokeCap.Round)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "$speedKmh",
+                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+                        color = if (speeding) CrimsonBrake else Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "km/h",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF9FB0C3)
+                    )
+                }
+            }
+
+            // Gear + Diesel Fuel Micro-Gauge
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        color = AmberDiesel.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.border(1.dp, AmberDiesel, RoundedCornerShape(8.dp))
+                    ) {
+                        Text(
+                            text = gearLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AmberDiesel,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Surface(
+                        color = Color.White,
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .border(2.5.dp, CrimsonBrake, CircleShape)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "$speedLimitKmh",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ObsidianNight,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+                // Compact Diesel Fuel Level Gauge
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(54.dp)
+                            .height(5.dp)
+                            .clip(CircleShape)
+                            .background(CabMetal)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth((fuelPercent / 100f).coerceIn(0f, 1f))
+                                .background(if (lowFuelWarning) CrimsonBrake else AmberDiesel)
+                        )
+                    }
+                    Text(
+                        text = "$fuelPercent%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (lowFuelWarning) CrimsonBrake else Color(0xFFD1DAE4),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
 
